@@ -1,0 +1,44 @@
+# 1. Dependências de build
+sudo apt update
+sudo apt install -y cmake git build-essential libgl1-mesa-dev libx11-dev
+
+# 2. Baixa e compila raylib do fonte (versão compatível com 4 args)
+git clone --depth 1 --branch 4.5.0 https://github.com/raysan5/raylib.git
+cd raylib/src
+make PLATFORM=PLATFORM_DESKTOP
+sudo make install
+cd ../..
+
+# 3. Agora compila o projeto
+sh build.sh
+
+
+# 1. Instala só o que realmente falta, ignorando o git corrompido
+sudo apt install -y --fix-missing libx11-dev libgl1-mesa-dev libgles-dev
+
+# 2. Recompila raylib (o clone já existe na pasta)
+cd ~/PastaCompartilhada/RFID_credito_raspberry_interface/raylib/src
+make PLATFORM=PLATFORM_DESKTOP
+
+# 3. Instala a biblioteca compilada
+sudo make install
+
+# 4. Volta ao projeto e compila
+cd ~/PastaCompartilhada/RFID_credito_raspberry_interface
+sh build.sh
+
+
+sudo apt install -y --fix-missing libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev
+
+# Depois recompila raylib
+cd ~/PastaCompartilhada/RFID_credito_raspberry_interface/raylib/src
+make PLATFORM=PLATFORM_DESKTOP
+sudo make install
+
+# Volta e compila o projeto
+cd ~/PastaCompartilhada/RFID_credito_raspberry_interface
+sh build.sh
+
+
+gcc main.c -I include -lraylib -lm -lpthread -DRFID_DUMMY -o RFID_demo
+./RFID_demo

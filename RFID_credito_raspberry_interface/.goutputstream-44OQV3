@@ -1,0 +1,8 @@
+flavio@raspberry:~/PastaCompartilhada/RFID_credito_raspberry_interface $ sh build.sh
+/usr/bin/ld: /tmp/ccN8ebdd.o: undefined reference to symbol 'sin@@GLIBC_2.0'
+/usr/bin/ld: /lib/i386-linux-gnu/libm.so.6: error adding symbols: DSO missing from command line
+collect2: error: ld returned 1 exit status
+Build finished!
+flavio@raspberry:~/PastaCompartilhada/RFID_credito_raspberry_interface $ gcc *.c -I include -lraylib -lm -lpthread -DRFID_DUMMY -o RFID_interface
+/usr/bin/ld: cannot find -lraylib
+collect2: error: ld returned 1 exit status
