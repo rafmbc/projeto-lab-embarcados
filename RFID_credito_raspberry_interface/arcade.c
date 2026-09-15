@@ -1,0 +1,306 @@
+/* Arcade RFID para Raspberry Pi + Projects Board Freenove.
+ * Hardware: direcional BCM 26/20/16/21 e buzzer ativo BCM 12.
+ * O modo RFID_DUMMY permite testar no PC com as setas/WASD. */
+#define _DEFAULT_SOURCE
+#include <math.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include "raylib.h"
+
+#ifndef RFID_DUMMY
+#include <wiringPi.h>
+#include "mfrc522.h"
+#else
+typedef int MFRC522_Status_t;
+#define MI_OK 0
+#define MI_NOTAGERR -1
+#define PICC_REQIDL 0x26
+static inline int MFRC522_Init(char t) { (void)t; return -1; }
+static inline int MFRC522_Request(uint8_t m, uint8_t *t) { (void)m; (void)t; return MI_NOTAGERR; }
+static inline int MFRC522_Anticoll(uint8_t *s) { (void)s; return MI_NOTAGERR; }
+static inline int MFRC522_SelectTag(uint8_t *s) { (void)s; return 0; }
+static inline void MFRC522_Halt(void) {}
+#endif
+
+#define W 800
+#define H 480
+#define CX (W/2)
+#define CSV_FILE "cartoes.csv"
+#define PIN_UP 26
+#define PIN_LEFT 20
+#define PIN_RIGHT 16
+#define PIN_DOWN 21
+#define PIN_BUZZER 12
+#define COST 1
+
+enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
+typedef enum { WAIT_CARD, MENU, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef struct { int x, y; } Cell;
+typedef struct { float x, y, speed, radius; } Rock;
+typedef struct {
+    pthread_mutex_t lock;
+    State state;
+    char card[9];
+    int credits;
+    int rfid_online;
+    char message[96];
+    int message_to_menu;
+} App;
+
+static App app;
+static unsigned held, pressed;
+static int buzz_edges;
+static double buzz_at, message_at;
+static int selected;
+
+/* Cobrinha */
+#define COLS 18
+#define ROWS 11
+#define CELL 28
+#define BOARD_X ((W - COLS*CELL)/2)
+#define BOARD_Y 120
+static Cell snake[COLS*ROWS], food;
+static int snake_len, dx, dy, next_dx, next_dy, snake_score;
+static double snake_at;
+
+/* Asteroides */
+#define ROCKS 9
+static Rock rocks[ROCKS];
+static float ship_x;
+static int asteroid_score;
+static double asteroid_at;
+
+static void card_string(const uint8_t *id, char *out) {
+    snprintf(out, 9, "%02X%02X%02X%02X", id[0], id[1], id[2], id[3]);
+}
+
+static void csv_init(void) {
+    FILE *f = fopen(CSV_FILE, "r");
+    if (f) { fclose(f); return; }
+    f = fopen(CSV_FILE, "w");
+    if (f) { fputs("CardID,Credito\n", f); fclose(f); }
+}
+
+static int csv_read(const char *card) {
+    FILE *f = fopen(CSV_FILE, "r");
+    char line[64], id[9]; int value;
+    if (!f) return 0;
+    fgets(line, sizeof line, f);
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "%8[^,],%d", id, &value) == 2 && !strcmp(id, card)) {
+            fclose(f); return value;
+        }
+    fclose(f); return 0;
+}
+
+static int csv_write(const char *card, int credits) {
+    FILE *in = fopen(CSV_FILE, "r"), *out;
+    char lines[128][64], id[9]; int value, count = 0, found = 0;
+    if (!in) return -1;
+    while (count < 128 && fgets(lines[count], sizeof lines[count], in)) {
+        if (count && sscanf(lines[count], "%8[^,],%d", id, &value) == 2 && !strcmp(id, card)) {
+            snprintf(lines[count], sizeof lines[count], "%s,%d\n", card, credits);
+            found = 1;
+        }
+        count++;
+    }
+    fclose(in);
+    if (!found && count < 128) snprintf(lines[count++], sizeof lines[0], "%s,%d\n", card, credits);
+    out = fopen(CSV_FILE, "w");
+    if (!out) return -1;
+    for (int i = 0; i < count; i++) fputs(lines[i], out);
+    fclose(out); return 0;
+}
+
+static void buzzer_play(int pulses) {
+#ifndef RFID_DUMMY
+    buzz_edges = pulses * 2;
+    buzz_at = GetTime();
+#else
+    (void)pulses;
+#endif
+}
+
+static void controls_init(void) {
+#ifndef RFID_DUMMY
+    if (wiringPiSetupGpio() == -1) { fputs("Erro ao iniciar GPIO.\n", stderr); return; }
+    const int pins[] = { PIN_UP, PIN_LEFT, PIN_RIGHT, PIN_DOWN };
+    for (int i = 0; i < 4; i++) { pinMode(pins[i], INPUT); pullUpDnControl(pins[i], PUD_UP); }
+    pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+#endif
+}
+
+static void controls_poll(void) {
+    unsigned old = held;
+#ifndef RFID_DUMMY
+    held = (digitalRead(PIN_UP) == LOW ? UP : 0) |
+           (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
+           (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
+           (digitalRead(PIN_DOWN) == LOW ? DOWN : 0);
+#else
+    held = (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W) ? UP : 0) |
+           (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) ? LEFT : 0) |
+           (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D) ? RIGHT : 0) |
+           (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S) ? DOWN : 0);
+#endif
+    pressed = held & ~old;
+    if (pressed) buzzer_play(1);
+#ifndef RFID_DUMMY
+    if (buzz_edges > 0 && GetTime() >= buzz_at) {
+        digitalWrite(PIN_BUZZER, (buzz_edges & 1) == 0 ? HIGH : LOW);
+        buzz_edges--; buzz_at = GetTime() + 0.07;
+    } else if (!buzz_edges) digitalWrite(PIN_BUZZER, LOW);
+#endif
+}
+
+static int was_pressed(unsigned key) { return (pressed & key) != 0; }
+static int is_held(unsigned key) { return (held & key) != 0; }
+
+static void show_message(const char *text, int return_menu) {
+    pthread_mutex_lock(&app.lock);
+    snprintf(app.message, sizeof app.message, "%s", text);
+    app.message_to_menu = return_menu;
+    app.state = MESSAGE;
+    pthread_mutex_unlock(&app.lock);
+    message_at = GetTime();
+}
+
+static void *rfid_loop(void *unused) {
+    uint8_t serial[5] = {0}, tag[16] = {0};
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&app.lock); State state = app.state; pthread_mutex_unlock(&app.lock);
+        if (state != WAIT_CARD) { usleep(80000); continue; }
+        if (MFRC522_Request(PICC_REQIDL, tag) != MI_OK || MFRC522_Anticoll(serial) != MI_OK || MFRC522_SelectTag(serial) == 0) {
+            MFRC522_Halt(); usleep(50000); continue;
+        }
+        char card[9]; card_string(serial, card); csv_init();
+        pthread_mutex_lock(&app.lock);
+        strcpy(app.card, card); app.credits = csv_read(card); app.state = MENU;
+        pthread_mutex_unlock(&app.lock);
+        buzzer_play(2); MFRC522_Halt();
+    }
+    return NULL;
+}
+
+static void snake_food(void) {
+    int on_snake;
+    do {
+        on_snake = 0; food.x = GetRandomValue(0, COLS-1); food.y = GetRandomValue(0, ROWS-1);
+        for (int i = 0; i < snake_len; i++) if (snake[i].x == food.x && snake[i].y == food.y) on_snake = 1;
+    } while (on_snake);
+}
+
+static void start_snake(void) {
+    snake_len = 4; for (int i = 0; i < snake_len; i++) snake[i] = (Cell){8-i, 5};
+    dx = next_dx = 1; dy = next_dy = 0; snake_score = 0; snake_at = GetTime()+0.18; snake_food();
+}
+
+static void start_asteroids(void) {
+    ship_x = CX; asteroid_score = 0; asteroid_at = GetTime();
+    for (int i = 0; i < ROCKS; i++) rocks[i] = (Rock){GetRandomValue(25,W-25), GetRandomValue(-H,0), GetRandomValue(120,220), GetRandomValue(16,30)};
+}
+
+static void start_game(State game, const char *card, int credits) {
+    if (credits < COST) { show_message("Creditos insuficientes", 1); buzzer_play(3); return; }
+    if (csv_write(card, credits-COST) < 0) { show_message("Erro ao salvar cartao", 1); buzzer_play(3); return; }
+    pthread_mutex_lock(&app.lock); app.credits = credits-COST; app.state = game; pthread_mutex_unlock(&app.lock);
+    if (game == SNAKE) start_snake(); else start_asteroids();
+    buzzer_play(2);
+}
+
+static void draw_header(const char *title, int score) {
+    DrawText(title, 24, 18, 28, RAYWHITE);
+    DrawText(TextFormat("Pontos: %d", score), W-170, 24, 20, YELLOW);
+    DrawLine(0, 55, W, 55, (Color){90,90,155,255});
+}
+
+static void draw_snake(void) {
+    if (was_pressed(UP) && dy != 1) { next_dx=0; next_dy=-1; }
+    if (was_pressed(DOWN) && dy != -1) { next_dx=0; next_dy=1; }
+    if (was_pressed(LEFT) && dx != 1) { next_dx=-1; next_dy=0; }
+    if (was_pressed(RIGHT) && dx != -1) { next_dx=1; next_dy=0; }
+    if (GetTime() >= snake_at) {
+        Cell next = {snake[0].x+next_dx, snake[0].y+next_dy};
+        int hit = next.x<0 || next.x>=COLS || next.y<0 || next.y>=ROWS;
+        for (int i=0;i<snake_len;i++) if (snake[i].x==next.x && snake[i].y==next.y) hit=1;
+        if (hit) { show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); buzzer_play(3); return; }
+        int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
+        for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
+        snake[0]=next; dx=next_dx; dy=next_dy;
+        if (ate) { snake_score += 10; snake_food(); } snake_at=GetTime()+0.13;
+    }
+    draw_header("COBRINHA", snake_score);
+    DrawText("Use o joystick", CX-70, 72, 18, LIGHTGRAY);
+    DrawRectangle(BOARD_X-3, BOARD_Y-3, COLS*CELL+6, ROWS*CELL+6, (Color){65,80,125,255});
+    DrawRectangle(BOARD_X, BOARD_Y, COLS*CELL, ROWS*CELL, (Color){10,31,24,255});
+    for (int i=0;i<snake_len;i++) DrawRectangle(BOARD_X+snake[i].x*CELL+2, BOARD_Y+snake[i].y*CELL+2, CELL-4, CELL-4, i ? (Color){50,180,100,255} : LIME);
+    DrawCircle(BOARD_X+food.x*CELL+CELL/2, BOARD_Y+food.y*CELL+CELL/2, 9, RED);
+}
+
+static void draw_asteroids(void) {
+    float dt=GetFrameTime();
+    if (is_held(LEFT)) ship_x-=340*dt;
+    if (is_held(RIGHT)) ship_x+=340*dt;
+    if (ship_x<24) ship_x=24;
+    if (ship_x>W-24) ship_x=W-24;
+    asteroid_score=(int)((GetTime()-asteroid_at)*10);
+    for (int i=0;i<ROCKS;i++) {
+        rocks[i].y+=rocks[i].speed*dt;
+        if (rocks[i].y>H+rocks[i].radius) rocks[i]=(Rock){GetRandomValue(25,W-25),GetRandomValue(-150,-20),rocks[i].speed+5,GetRandomValue(16,30)};
+        float x=rocks[i].x-ship_x, y=rocks[i].y-(H-55), r=rocks[i].radius+18;
+        if (x*x+y*y<r*r) { show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); buzzer_play(3); return; }
+    }
+    draw_header("ASTEROIDES", asteroid_score);
+    DrawText("Joystick esquerda/direita", CX-115, 72, 18, LIGHTGRAY);
+    for (int y=100;y<H;y+=43) DrawCircle((y*17)%W,y,1.5f,(Color){185,185,255,170});
+    for (int i=0;i<ROCKS;i++) DrawCircleV((Vector2){rocks[i].x,rocks[i].y},rocks[i].radius,GRAY);
+    DrawTriangle((Vector2){ship_x,H-90},(Vector2){ship_x-20,H-35},(Vector2){ship_x+20,H-35},SKYBLUE);
+}
+
+int main(void) {
+    int rfid_ok = MFRC522_Init('B') == 0;
+    pthread_mutex_init(&app.lock, NULL); app.state=WAIT_CARD; app.rfid_online=rfid_ok;
+    if (rfid_ok) { pthread_t thread; pthread_create(&thread,NULL,rfid_loop,NULL); pthread_detach(thread); }
+    InitWindow(W,H,"Arcade RFID"); SetTargetFPS(60); controls_init();
+    while (!WindowShouldClose()) {
+        controls_poll();
+        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); int credits=app.credits; char note[96]; strcpy(note,app.message); int back=app.message_to_menu; pthread_mutex_unlock(&app.lock);
+#ifdef RFID_DUMMY
+        if (state==WAIT_CARD && (was_pressed(RIGHT) || IsKeyPressed(KEY_ENTER))) { csv_init(); strcpy(card,"DEMO0001"); pthread_mutex_lock(&app.lock); strcpy(app.card,card); app.credits=csv_read(card); app.state=MENU; pthread_mutex_unlock(&app.lock); buzzer_play(2); }
+#endif
+        if (state==MESSAGE && GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); }
+        if (state==MENU) {
+            if (was_pressed(UP)) selected=(selected+3)%4;
+            if (was_pressed(DOWN)) selected=(selected+1)%4;
+            if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
+            if (was_pressed(RIGHT)) {
+                if (selected==0) start_game(SNAKE,card,credits);
+                else if (selected==1) start_game(ASTEROIDS,card,credits);
+                else if (selected==2) show_message(TextFormat("Saldo: %d credito(s)",credits),1);
+                else { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
+            }
+        }
+        BeginDrawing(); ClearBackground((Color){12,14,29,255});
+        if (state==WAIT_CARD) {
+            DrawText("ARCADE RFID", CX-105,75,32,RAYWHITE); DrawCircleLines(CX,205,78,(Color){100,120,255,220}); DrawCircle(CX,205,44,(Color){55,70,190,255});
+            DrawText("RFID",CX-28,196,21,WHITE); DrawText(rfid_ok?"Aproxime o cartao":"Modo demo: pressione DIREITA",CX-170,315,22,rfid_ok?RAYWHITE:GOLD);
+        } else if (state==MENU) {
+            DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Cartao %s   |   Creditos: %d",card,credits),CX-170,58,20,GOLD);
+            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","CONSULTAR SALDO","ENCERRAR CARTAO"};
+            for (int i=0;i<4;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,105+i*70,440,54},.2f,8,c); DrawText(items[i],230,120+i*70,21,WHITE); if(i==selected)DrawText(">",195,120+i*70,22,YELLOW); }
+            DrawText("Joystick: cima/baixo seleciona | direita confirma | esquerda volta",65,425,16,LIGHTGRAY);
+        } else if (state==SNAKE) draw_snake();
+        else if (state==ASTEROIDS) draw_asteroids();
+        else { DrawRectangleRounded((Rectangle){110,160,580,150},.15f,8,(Color){35,40,82,255}); DrawText(note,CX-MeasureText(note,27)/2,215,27,WHITE); }
+        EndDrawing();
+    }
+#ifndef RFID_DUMMY
+    digitalWrite(PIN_BUZZER,LOW);
+#endif
+    CloseWindow(); pthread_mutex_destroy(&app.lock); return 0;
+}
