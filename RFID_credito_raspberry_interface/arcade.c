@@ -38,7 +38,7 @@ static inline void MFRC522_Halt(void) {}
 #define COST 1
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, MENU, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef enum { WAIT_CARD, MENU, RECHARGE, SNAKE, ASTEROIDS, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { float x, y, speed, radius; } Rock;
 typedef struct {
@@ -55,7 +55,7 @@ static App app;
 static unsigned held, pressed;
 static int buzz_edges;
 static double buzz_at, message_at;
-static int selected;
+static int selected, recharge_selected;
 
 /* Cobrinha */
 #define COLS 18
@@ -137,10 +137,16 @@ static void controls_init(void) {
 static void controls_poll(void) {
     unsigned old = held;
 #ifndef RFID_DUMMY
-    held = (digitalRead(PIN_UP) == LOW ? UP : 0) |
-           (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
-           (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
-           (digitalRead(PIN_DOWN) == LOW ? DOWN : 0);
+    /* Estabiliza o nivel por 35 ms. Evita que o bounce do S4 azul
+       desapareca antes de virar um evento de navegacao. */
+    static unsigned sampled;
+    static double sampled_at;
+    unsigned raw = (digitalRead(PIN_UP) == LOW ? UP : 0) |
+                   (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
+                   (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
+                   (digitalRead(PIN_DOWN) == LOW ? DOWN : 0);
+    if (raw != sampled) { sampled = raw; sampled_at = GetTime(); }
+    if (sampled != held && GetTime() - sampled_at >= 0.035) held = sampled;
 #else
     held = (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W) ? UP : 0) |
            (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) ? LEFT : 0) |
@@ -213,6 +219,12 @@ static void start_game(State game, const char *card, int credits) {
     buzzer_play(2);
 }
 
+static void recharge(const char *card, int credits, int value) {
+    if (csv_write(card, credits + value) < 0) { show_message("Erro ao salvar recarga", 1); buzzer_play(3); return; }
+    pthread_mutex_lock(&app.lock); app.credits = credits + value; pthread_mutex_unlock(&app.lock);
+    show_message(TextFormat("Recarga de +%d credito(s)", value), 1); buzzer_play(2);
+}
+
 static void draw_header(const char *title, int score) {
     DrawText(title, 24, 18, 28, RAYWHITE);
     DrawText(TextFormat("Pontos: %d", score), W-170, 24, 20, YELLOW);
@@ -275,14 +287,25 @@ int main(void) {
 #endif
         if (state==MESSAGE && GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); }
         if (state==MENU) {
-            if (was_pressed(UP)) selected=(selected+3)%4;
-            if (was_pressed(DOWN)) selected=(selected+1)%4;
+            if (was_pressed(UP)) selected=(selected+4)%5;
+            if (was_pressed(DOWN)) selected=(selected+1)%5;
             if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
             if (was_pressed(RIGHT)) {
                 if (selected==0) start_game(SNAKE,card,credits);
                 else if (selected==1) start_game(ASTEROIDS,card,credits);
-                else if (selected==2) show_message(TextFormat("Saldo: %d credito(s)",credits),1);
+                else if (selected==2) { recharge_selected=0; pthread_mutex_lock(&app.lock); app.state=RECHARGE; pthread_mutex_unlock(&app.lock); }
+                else if (selected==3) show_message(TextFormat("Saldo: %d credito(s)",credits),1);
                 else { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
+            }
+        }
+        if (state==RECHARGE) {
+            if (was_pressed(UP)) recharge_selected=(recharge_selected+3)%4;
+            if (was_pressed(DOWN)) recharge_selected=(recharge_selected+1)%4;
+            if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock); }
+            if (was_pressed(RIGHT)) {
+                const int packs[] = {1, 5, 10};
+                if (recharge_selected < 3) recharge(card,credits,packs[recharge_selected]);
+                else { pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock); }
             }
         }
         BeginDrawing(); ClearBackground((Color){12,14,29,255});
@@ -291,9 +314,16 @@ int main(void) {
             DrawText("RFID",CX-28,196,21,WHITE); DrawText(rfid_ok?"Aproxime o cartao":"Modo demo: pressione DIREITA",CX-170,315,22,rfid_ok?RAYWHITE:GOLD);
         } else if (state==MENU) {
             DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Cartao %s   |   Creditos: %d",card,credits),CX-170,58,20,GOLD);
-            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","CONSULTAR SALDO","ENCERRAR CARTAO"};
-            for (int i=0;i<4;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,105+i*70,440,54},.2f,8,c); DrawText(items[i],230,120+i*70,21,WHITE); if(i==selected)DrawText(">",195,120+i*70,22,YELLOW); }
+            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","ENCERRAR CARTAO"};
+            for (int i=0;i<5;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,92+i*58,440,45},.2f,8,c); DrawText(items[i],230,104+i*58,20,WHITE); if(i==selected)DrawText(">",195,104+i*58,22,YELLOW); }
             DrawText("Joystick: cima/baixo seleciona | direita confirma | esquerda volta",65,425,16,LIGHTGRAY);
+        } else if (state==RECHARGE) {
+            const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
+            DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);
+            DrawText(TextFormat("Cartao %s   |   Saldo: %d",card,credits),CX-160,112,20,RAYWHITE);
+            for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,155+i*55,390,42},.2f,8,c); DrawText(packs[i],270,165+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,165+i*55,22,YELLOW); }
+            DrawText("Qualquer usuario pode recarregar neste modo demo",150,395,17,LIGHTGRAY);
+            DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
         } else if (state==SNAKE) draw_snake();
         else if (state==ASTEROIDS) draw_asteroids();
         else { DrawRectangleRounded((Rectangle){110,160,580,150},.15f,8,(Color){35,40,82,255}); DrawText(note,CX-MeasureText(note,27)/2,215,27,WHITE); }

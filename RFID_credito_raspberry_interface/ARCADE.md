@@ -2,6 +2,8 @@
 
 O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há dois jogos Raylib: Cobrinha e Asteroides. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está isolado em `arcade.c`.
 
+No menu **RECARREGAR CREDITOS**, qualquer cartão pode receber +1, +5 ou +10 créditos. É uma recarga livre para a demonstração; não há cobrança/pagamento integrado.
+
 ## Controles físicos
 
 Os quatro botões do direcional/joystick usam a numeração BCM já validada na Projects Board Freenove:
