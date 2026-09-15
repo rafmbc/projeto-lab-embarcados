@@ -14,7 +14,7 @@
 int (*__def_printf)(const char *__restrict, ...);
 size_t __def_width = MAX_WIDTH;
 int dump_config(size_t width, int (*__printf)(const char *__restrict, ...)) {
-	if (width < 0 || width >= MAX_WIDTH) {
+	if (width == 0 || width > MAX_WIDTH) {
 		return -1;
 	}
 	if (__printf == NULL) {

@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE
+
 /*
  * mfrc522_hal.c
  *
