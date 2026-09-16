@@ -155,12 +155,13 @@ static void score_record(const char *card, const char *game, int score) {
     fclose(out);
 }
 
-static int score_load(ScoreEntry *entries, int limit) {
-    FILE *f; char line[80]; int count = 0;
+static int score_load(ScoreEntry *entries, int limit, const char *game) {
+    FILE *f; char line[80]; int count = 0; ScoreEntry candidate;
     score_init(); f = fopen(SCORE_FILE, "r"); if (!f) return 0;
     fgets(line, sizeof line, f);
     while (count < limit && fgets(line, sizeof line, f))
-        if (sscanf(line, "%8[^,],%15[^,],%d", entries[count].card, entries[count].game, &entries[count].score) == 3) count++;
+        if (sscanf(line, "%8[^,],%15[^,],%d", candidate.card, candidate.game, &candidate.score) == 3 && !strcmp(candidate.game, game))
+            entries[count++] = candidate;
     fclose(f);
     for (int i = 0; i < count; i++) for (int j = i + 1; j < count; j++)
         if (entries[j].score > entries[i].score) { ScoreEntry tmp = entries[i]; entries[i] = entries[j]; entries[j] = tmp; }
@@ -409,7 +410,9 @@ int main(void) {
         BeginDrawing(); ClearBackground((Color){12,14,29,255});
         if (state==WAIT_CARD) {
             DrawText("ARCADE RFID", CX-105,75,32,RAYWHITE); DrawCircleLines(CX,205,78,(Color){100,120,255,220}); DrawCircle(CX,205,44,(Color){55,70,190,255});
-            DrawText("RFID",CX-28,196,21,WHITE); DrawText(rfid_ok?"Aproxime o cartao":"Modo demo: pressione DIREITA",CX-170,315,22,rfid_ok?RAYWHITE:GOLD);
+            DrawText("RFID",CX-28,196,21,WHITE);
+            const char *prompt = rfid_ok ? "Aproxime o cartao" : "Modo demo: pressione DIREITA";
+            DrawText(prompt, CX - MeasureText(prompt, 22)/2, 315, 22, rfid_ok ? RAYWHITE : GOLD);
         } else if (state==MENU) {
             DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Cartao %s   |   Creditos: %d",card,credits),CX-170,58,20,GOLD);
             const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","PLACAR","ENCERRAR CARTAO"};
@@ -423,15 +426,24 @@ int main(void) {
             DrawText("Qualquer usuario pode recarregar neste modo demo",150,395,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
         } else if (state==SCORES) {
-            ScoreEntry entries[12]; int count = score_load(entries, 12);
-            DrawText("PLACAR", CX-58, 30, 32, GOLD);
-            DrawText("Melhores pontuacoes por cartao e jogo", CX-175, 68, 18, LIGHTGRAY);
-            if (count == 0) DrawText("Jogue uma partida para entrar no placar.", CX-190, 205, 22, RAYWHITE);
-            for (int i = 0; i < count; i++) {
-                DrawText(TextFormat("%d.", i+1), 150, 105+i*26, 19, YELLOW);
-                DrawText(entries[i].card, 195, 105+i*26, 19, RAYWHITE);
-                DrawText(entries[i].game, 325, 105+i*26, 19, SKYBLUE);
-                DrawText(TextFormat("%d", entries[i].score), 565, 105+i*26, 19, GREEN);
+            ScoreEntry snake_scores[10], asteroid_scores[10];
+            int snake_count = score_load(snake_scores, 10, "Cobrinha");
+            int asteroid_count = score_load(asteroid_scores, 10, "Asteroides");
+            DrawText("PLACAR", CX-58, 24, 32, GOLD);
+            DrawText("COBRINHA", 145, 75, 24, LIME);
+            DrawText("ASTEROIDES", 475, 75, 24, SKYBLUE);
+            DrawLine(CX, 68, CX, 390, (Color){80,90,145,255});
+            if (snake_count == 0) DrawText("Sem scores", 145, 115, 18, LIGHTGRAY);
+            if (asteroid_count == 0) DrawText("Sem scores", 475, 115, 18, LIGHTGRAY);
+            for (int i = 0; i < snake_count; i++) {
+                DrawText(TextFormat("%d.", i+1), 95, 112+i*27, 18, YELLOW);
+                DrawText(snake_scores[i].card, 135, 112+i*27, 18, RAYWHITE);
+                DrawText(TextFormat("%d", snake_scores[i].score), 300, 112+i*27, 18, GREEN);
+            }
+            for (int i = 0; i < asteroid_count; i++) {
+                DrawText(TextFormat("%d.", i+1), 430, 112+i*27, 18, YELLOW);
+                DrawText(asteroid_scores[i].card, 470, 112+i*27, 18, RAYWHITE);
+                DrawText(TextFormat("%d", asteroid_scores[i].score), 635, 112+i*27, 18, GREEN);
             }
             DrawText("Esquerda ou direita para voltar", CX-135, 430, 17, LIGHTGRAY);
         } else if (state==SNAKE) draw_snake();

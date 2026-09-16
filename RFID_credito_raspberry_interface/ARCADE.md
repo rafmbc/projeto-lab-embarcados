@@ -63,4 +63,4 @@ O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa
 
 - **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
-- **PLACAR:** registra a melhor pontuação de cada cartão em cada jogo no arquivo `placar.csv`. Se o arquivo ainda não existir, ele é criado automaticamente ao terminar a primeira partida.
+- **PLACAR:** mostra Cobrinha e Asteroides em duas colunas independentes na mesma tela. Registra a melhor pontuação de cada cartão por jogo no arquivo `placar.csv`, criado automaticamente ao terminar a primeira partida.
