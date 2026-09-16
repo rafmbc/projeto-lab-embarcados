@@ -168,18 +168,24 @@ static void controls_poll(void) {
        desapareca antes de virar um evento de navegacao. */
     static unsigned sampled;
     static double sampled_at;
-    unsigned raw = (digitalRead(PIN_UP) == LOW ? UP : 0) |
-                   (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
-                   (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
-                   (digitalRead(PIN_DOWN) == LOW ? DOWN : 0) |
-                   (digitalRead(PIN_JOYSTICK_Z) == LOW ? RIGHT : 0);
-    int joy_x = ads7830_read(JOYSTICK_X_CHANNEL);
-    int joy_y = ads7830_read(JOYSTICK_Y_CHANNEL);
-    if (joy_x >= 0 && joy_y >= 0) {
-        if (joy_x <= JOYSTICK_LOW) raw |= LEFT;
-        if (joy_x >= JOYSTICK_HIGH) raw |= RIGHT;
-        if (joy_y <= JOYSTICK_LOW) raw |= UP;
-        if (joy_y >= JOYSTICK_HIGH) raw |= DOWN;
+    unsigned buttons = (digitalRead(PIN_UP) == LOW ? UP : 0) |
+                       (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
+                       (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
+                       (digitalRead(PIN_DOWN) == LOW ? DOWN : 0) |
+                       (digitalRead(PIN_JOYSTICK_Z) == LOW ? RIGHT : 0);
+    unsigned raw = buttons;
+
+    /* Nesta Projects Board os eixos analogicos estao invertidos.
+       Botao fisico sempre vence uma leitura analogica concorrente. */
+    if (buttons == 0) {
+        int joy_x = ads7830_read(JOYSTICK_X_CHANNEL);
+        int joy_y = ads7830_read(JOYSTICK_Y_CHANNEL);
+        if (joy_x >= 0 && joy_y >= 0) {
+            if (joy_x <= JOYSTICK_LOW) raw = RIGHT;
+            else if (joy_x >= JOYSTICK_HIGH) raw = LEFT;
+            else if (joy_y <= JOYSTICK_LOW) raw = DOWN;
+            else if (joy_y >= JOYSTICK_HIGH) raw = UP;
+        }
     }
     if (raw != sampled) { sampled = raw; sampled_at = GetTime(); }
     if (sampled != held && GetTime() - sampled_at >= 0.035) held = sampled;
@@ -323,8 +329,8 @@ int main(void) {
 #endif
         if (state==MESSAGE && GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); }
         if (state==MENU) {
-            if (was_pressed(UP)) selected=(selected+4)%5;
-            if (was_pressed(DOWN)) selected=(selected+1)%5;
+            if (was_pressed(UP) && selected > 0) selected--;
+            if (was_pressed(DOWN) && selected < 4) selected++;
             if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
             if (was_pressed(RIGHT)) {
                 if (selected==0) start_game(SNAKE,card,credits);
@@ -335,8 +341,8 @@ int main(void) {
             }
         }
         if (state==RECHARGE) {
-            if (was_pressed(UP)) recharge_selected=(recharge_selected+3)%4;
-            if (was_pressed(DOWN)) recharge_selected=(recharge_selected+1)%4;
+            if (was_pressed(UP) && recharge_selected > 0) recharge_selected--;
+            if (was_pressed(DOWN) && recharge_selected < 3) recharge_selected++;
             if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock); }
             if (was_pressed(RIGHT)) {
                 const int packs[] = {1, 5, 10};
