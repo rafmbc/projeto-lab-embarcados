@@ -48,3 +48,13 @@ git pull --ff-only origin main
 ```
 
 Se `git status` mostrar arquivos alterados, faça commit ou guarde-os com `git stash -u` antes do `pull`.
+
+## Joystick analógico Freenove
+
+O joystick físico não é o mesmo conjunto de quatro botões: os eixos X/Y passam pelo ADC ADS7830 via I²C. Ative **I2C** em `sudo raspi-config`, reinicie e confirme que o ADC responde no endereço `48`:
+
+```sh
+i2cdetect -y 1
+```
+
+O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. O clique equivale a confirmar (`direita`) no menu. Se `48` não aparecer, confira a chave/cabeamento do módulo ADC da Projects Board; os botões continuam disponíveis como alternativa.

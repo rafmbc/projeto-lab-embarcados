@@ -13,6 +13,9 @@
 
 #ifndef RFID_DUMMY
 #include <wiringPi.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/i2c-dev.h>
 #include "mfrc522.h"
 #else
 typedef int MFRC522_Status_t;
@@ -35,6 +38,12 @@ static inline void MFRC522_Halt(void) {}
 #define PIN_RIGHT 16
 #define PIN_DOWN 21
 #define PIN_BUZZER 12
+#define PIN_JOYSTICK_Z 7
+#define ADC_I2C_ADDRESS 0x48
+#define JOYSTICK_X_CHANNEL 5
+#define JOYSTICK_Y_CHANNEL 6
+#define JOYSTICK_LOW 80
+#define JOYSTICK_HIGH 175
 #define COST 1
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
@@ -53,6 +62,9 @@ typedef struct {
 
 static App app;
 static unsigned held, pressed;
+#ifndef RFID_DUMMY
+static int adc_fd = -1;
+#endif
 static int buzz_edges;
 static double buzz_at, message_at;
 static int selected, recharge_selected;
@@ -128,9 +140,24 @@ static void buzzer_play(int pulses) {
 static void controls_init(void) {
 #ifndef RFID_DUMMY
     if (wiringPiSetupGpio() == -1) { fputs("Erro ao iniciar GPIO.\n", stderr); return; }
-    const int pins[] = { PIN_UP, PIN_LEFT, PIN_RIGHT, PIN_DOWN };
-    for (int i = 0; i < 4; i++) { pinMode(pins[i], INPUT); pullUpDnControl(pins[i], PUD_UP); }
+    const int pins[] = { PIN_UP, PIN_LEFT, PIN_RIGHT, PIN_DOWN, PIN_JOYSTICK_Z };
+    for (int i = 0; i < 5; i++) { pinMode(pins[i], INPUT); pullUpDnControl(pins[i], PUD_UP); }
     pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+    adc_fd = open("/dev/i2c-1", O_RDWR);
+    if (adc_fd >= 0 && ioctl(adc_fd, I2C_SLAVE, ADC_I2C_ADDRESS) < 0) { close(adc_fd); adc_fd = -1; }
+    if (adc_fd < 0) fputs("Joystick analogico indisponivel: habilite I2C e verifique ADS7830 (0x48).\n", stderr);
+#endif
+}
+
+static int ads7830_read(int channel) {
+#ifndef RFID_DUMMY
+    unsigned char command = (unsigned char)(0x84 | ((((channel << 2) | (channel >> 1)) & 0x07) << 4));
+    unsigned char value;
+    if (adc_fd < 0 || write(adc_fd, &command, 1) != 1 || read(adc_fd, &value, 1) != 1) return -1;
+    return value;
+#else
+    (void)channel;
+    return -1;
 #endif
 }
 
@@ -144,7 +171,16 @@ static void controls_poll(void) {
     unsigned raw = (digitalRead(PIN_UP) == LOW ? UP : 0) |
                    (digitalRead(PIN_LEFT) == LOW ? LEFT : 0) |
                    (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
-                   (digitalRead(PIN_DOWN) == LOW ? DOWN : 0);
+                   (digitalRead(PIN_DOWN) == LOW ? DOWN : 0) |
+                   (digitalRead(PIN_JOYSTICK_Z) == LOW ? RIGHT : 0);
+    int joy_x = ads7830_read(JOYSTICK_X_CHANNEL);
+    int joy_y = ads7830_read(JOYSTICK_Y_CHANNEL);
+    if (joy_x >= 0 && joy_y >= 0) {
+        if (joy_x <= JOYSTICK_LOW) raw |= LEFT;
+        if (joy_x >= JOYSTICK_HIGH) raw |= RIGHT;
+        if (joy_y <= JOYSTICK_LOW) raw |= UP;
+        if (joy_y >= JOYSTICK_HIGH) raw |= DOWN;
+    }
     if (raw != sampled) { sampled = raw; sampled_at = GetTime(); }
     if (sampled != held && GetTime() - sampled_at >= 0.035) held = sampled;
 #else
