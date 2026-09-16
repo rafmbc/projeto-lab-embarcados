@@ -33,8 +33,9 @@ static inline void MFRC522_Halt(void) {}
 #define H 480
 #define CX (W/2)
 #define CSV_FILE "cartoes.csv"
-#define PIN_UP 26
-#define PIN_LEFT 20
+#define SCORE_FILE "placar.csv"
+#define PIN_UP 20
+#define PIN_LEFT 26
 #define PIN_RIGHT 16
 #define PIN_DOWN 21
 #define PIN_BUZZER 12
@@ -47,9 +48,10 @@ static inline void MFRC522_Halt(void) {}
 #define COST 1
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, MENU, RECHARGE, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef enum { WAIT_CARD, MENU, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { float x, y, speed, radius; } Rock;
+typedef struct { char card[9]; char game[16]; int score; } ScoreEntry;
 typedef struct {
     pthread_mutex_t lock;
     State state;
@@ -61,13 +63,14 @@ typedef struct {
 } App;
 
 static App app;
-static unsigned held, pressed;
+static unsigned held, pressed, button_pressed, joystick_held;
 #ifndef RFID_DUMMY
 static int adc_fd = -1;
 #endif
 static int buzz_edges;
 static double buzz_at, message_at;
 static int selected, recharge_selected;
+static char active_card[9];
 
 /* Cobrinha */
 #define COLS 18
@@ -128,6 +131,42 @@ static int csv_write(const char *card, int credits) {
     fclose(out); return 0;
 }
 
+static void score_init(void) {
+    FILE *f = fopen(SCORE_FILE, "r");
+    if (f) { fclose(f); return; }
+    f = fopen(SCORE_FILE, "w");
+    if (f) { fputs("CardID,Jogo,Pontuacao\n", f); fclose(f); }
+}
+
+static void score_record(const char *card, const char *game, int score) {
+    FILE *in, *out; char lines[128][80], id[9], name[16]; int value, count = 0, found = 0;
+    score_init(); in = fopen(SCORE_FILE, "r"); if (!in) return;
+    while (count < 128 && fgets(lines[count], sizeof lines[count], in)) {
+        if (count && sscanf(lines[count], "%8[^,],%15[^,],%d", id, name, &value) == 3 && !strcmp(id, card) && !strcmp(name, game)) {
+            if (score > value) snprintf(lines[count], sizeof lines[count], "%s,%s,%d\n", card, game, score);
+            found = 1;
+        }
+        count++;
+    }
+    fclose(in);
+    if (!found && count < 128) snprintf(lines[count++], sizeof lines[0], "%s,%s,%d\n", card, game, score);
+    out = fopen(SCORE_FILE, "w"); if (!out) return;
+    for (int i = 0; i < count; i++) fputs(lines[i], out);
+    fclose(out);
+}
+
+static int score_load(ScoreEntry *entries, int limit) {
+    FILE *f; char line[80]; int count = 0;
+    score_init(); f = fopen(SCORE_FILE, "r"); if (!f) return 0;
+    fgets(line, sizeof line, f);
+    while (count < limit && fgets(line, sizeof line, f))
+        if (sscanf(line, "%8[^,],%15[^,],%d", entries[count].card, entries[count].game, &entries[count].score) == 3) count++;
+    fclose(f);
+    for (int i = 0; i < count; i++) for (int j = i + 1; j < count; j++)
+        if (entries[j].score > entries[i].score) { ScoreEntry tmp = entries[i]; entries[i] = entries[j]; entries[j] = tmp; }
+    return count;
+}
+
 static void buzzer_play(int pulses) {
 #ifndef RFID_DUMMY
     buzz_edges = pulses * 2;
@@ -173,27 +212,37 @@ static void controls_poll(void) {
                        (digitalRead(PIN_RIGHT) == LOW ? RIGHT : 0) |
                        (digitalRead(PIN_DOWN) == LOW ? DOWN : 0) |
                        (digitalRead(PIN_JOYSTICK_Z) == LOW ? RIGHT : 0);
+    static unsigned button_sampled, buttons_held;
+    static double button_sampled_at;
+    unsigned old_buttons = buttons_held;
     unsigned raw = buttons;
 
     /* Nesta Projects Board os eixos analogicos estao invertidos.
        Botao fisico sempre vence uma leitura analogica concorrente. */
+    joystick_held = 0;
     if (buttons == 0) {
         int joy_x = ads7830_read(JOYSTICK_X_CHANNEL);
         int joy_y = ads7830_read(JOYSTICK_Y_CHANNEL);
         if (joy_x >= 0 && joy_y >= 0) {
-            if (joy_x <= JOYSTICK_LOW) raw = RIGHT;
-            else if (joy_x >= JOYSTICK_HIGH) raw = LEFT;
-            else if (joy_y <= JOYSTICK_LOW) raw = DOWN;
-            else if (joy_y >= JOYSTICK_HIGH) raw = UP;
+            if (joy_x <= JOYSTICK_LOW) joystick_held = RIGHT;
+            else if (joy_x >= JOYSTICK_HIGH) joystick_held = LEFT;
+            else if (joy_y <= JOYSTICK_LOW) joystick_held = DOWN;
+            else if (joy_y >= JOYSTICK_HIGH) joystick_held = UP;
+            raw = joystick_held;
         }
     }
+    if (buttons != button_sampled) { button_sampled = buttons; button_sampled_at = GetTime(); }
+    if (button_sampled != buttons_held && GetTime() - button_sampled_at >= 0.035) buttons_held = button_sampled;
     if (raw != sampled) { sampled = raw; sampled_at = GetTime(); }
     if (sampled != held && GetTime() - sampled_at >= 0.035) held = sampled;
+    button_pressed = buttons_held & ~old_buttons;
 #else
     held = (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W) ? UP : 0) |
            (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) ? LEFT : 0) |
            (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D) ? RIGHT : 0) |
            (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S) ? DOWN : 0);
+    joystick_held = held;
+    button_pressed = held & ~old;
 #endif
     pressed = held & ~old;
     if (pressed) buzzer_play(1);
@@ -206,7 +255,9 @@ static void controls_poll(void) {
 }
 
 static int was_pressed(unsigned key) { return (pressed & key) != 0; }
+static int button_was_pressed(unsigned key) { return (button_pressed & key) != 0; }
 static int is_held(unsigned key) { return (held & key) != 0; }
+static int joystick_is_held(unsigned key) { return (joystick_held & key) != 0; }
 
 static void show_message(const char *text, int return_menu) {
     pthread_mutex_lock(&app.lock);
@@ -257,6 +308,7 @@ static void start_game(State game, const char *card, int credits) {
     if (credits < COST) { show_message("Creditos insuficientes", 1); buzzer_play(3); return; }
     if (csv_write(card, credits-COST) < 0) { show_message("Erro ao salvar cartao", 1); buzzer_play(3); return; }
     pthread_mutex_lock(&app.lock); app.credits = credits-COST; app.state = game; pthread_mutex_unlock(&app.lock);
+    strcpy(active_card, card);
     if (game == SNAKE) start_snake(); else start_asteroids();
     buzzer_play(2);
 }
@@ -274,22 +326,22 @@ static void draw_header(const char *title, int score) {
 }
 
 static void draw_snake(void) {
-    if (was_pressed(UP) && dy != 1) { next_dx=0; next_dy=-1; }
-    if (was_pressed(DOWN) && dy != -1) { next_dx=0; next_dy=1; }
-    if (was_pressed(LEFT) && dx != 1) { next_dx=-1; next_dy=0; }
-    if (was_pressed(RIGHT) && dx != -1) { next_dx=1; next_dy=0; }
+    if (button_was_pressed(UP) && dy != 1) { next_dx=0; next_dy=-1; }
+    if (button_was_pressed(DOWN) && dy != -1) { next_dx=0; next_dy=1; }
+    if (button_was_pressed(LEFT) && dx != 1) { next_dx=-1; next_dy=0; }
+    if (button_was_pressed(RIGHT) && dx != -1) { next_dx=1; next_dy=0; }
     if (GetTime() >= snake_at) {
         Cell next = {snake[0].x+next_dx, snake[0].y+next_dy};
         int hit = next.x<0 || next.x>=COLS || next.y<0 || next.y>=ROWS;
         for (int i=0;i<snake_len;i++) if (snake[i].x==next.x && snake[i].y==next.y) hit=1;
-        if (hit) { show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); buzzer_play(3); return; }
+        if (hit) { score_record(active_card, "Cobrinha", snake_score); show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); buzzer_play(3); return; }
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
         if (ate) { snake_score += 10; snake_food(); } snake_at=GetTime()+0.13;
     }
     draw_header("COBRINHA", snake_score);
-    DrawText("Use o joystick", CX-70, 72, 18, LIGHTGRAY);
+    DrawText("Use os botoes direcionais", CX-130, 72, 18, LIGHTGRAY);
     DrawRectangle(BOARD_X-3, BOARD_Y-3, COLS*CELL+6, ROWS*CELL+6, (Color){65,80,125,255});
     DrawRectangle(BOARD_X, BOARD_Y, COLS*CELL, ROWS*CELL, (Color){10,31,24,255});
     for (int i=0;i<snake_len;i++) DrawRectangle(BOARD_X+snake[i].x*CELL+2, BOARD_Y+snake[i].y*CELL+2, CELL-4, CELL-4, i ? (Color){50,180,100,255} : LIME);
@@ -298,8 +350,8 @@ static void draw_snake(void) {
 
 static void draw_asteroids(void) {
     float dt=GetFrameTime();
-    if (is_held(LEFT)) ship_x-=340*dt;
-    if (is_held(RIGHT)) ship_x+=340*dt;
+    if (joystick_is_held(LEFT)) ship_x-=340*dt;
+    if (joystick_is_held(RIGHT)) ship_x+=340*dt;
     if (ship_x<24) ship_x=24;
     if (ship_x>W-24) ship_x=W-24;
     asteroid_score=(int)((GetTime()-asteroid_at)*10);
@@ -307,7 +359,7 @@ static void draw_asteroids(void) {
         rocks[i].y+=rocks[i].speed*dt;
         if (rocks[i].y>H+rocks[i].radius) rocks[i]=(Rock){GetRandomValue(25,W-25),GetRandomValue(-150,-20),rocks[i].speed+5,GetRandomValue(16,30)};
         float x=rocks[i].x-ship_x, y=rocks[i].y-(H-55), r=rocks[i].radius+18;
-        if (x*x+y*y<r*r) { show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); buzzer_play(3); return; }
+        if (x*x+y*y<r*r) { score_record(active_card, "Asteroides", asteroid_score); show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); buzzer_play(3); return; }
     }
     draw_header("ASTEROIDES", asteroid_score);
     DrawText("Joystick esquerda/direita", CX-115, 72, 18, LIGHTGRAY);
@@ -330,15 +382,19 @@ int main(void) {
         if (state==MESSAGE && GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); }
         if (state==MENU) {
             if (was_pressed(UP) && selected > 0) selected--;
-            if (was_pressed(DOWN) && selected < 4) selected++;
+            if (was_pressed(DOWN) && selected < 5) selected++;
             if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
             if (was_pressed(RIGHT)) {
                 if (selected==0) start_game(SNAKE,card,credits);
                 else if (selected==1) start_game(ASTEROIDS,card,credits);
                 else if (selected==2) { recharge_selected=0; pthread_mutex_lock(&app.lock); app.state=RECHARGE; pthread_mutex_unlock(&app.lock); }
                 else if (selected==3) show_message(TextFormat("Saldo: %d credito(s)",credits),1);
+                else if (selected==4) { pthread_mutex_lock(&app.lock); app.state=SCORES; pthread_mutex_unlock(&app.lock); }
                 else { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
             }
+        }
+        if (state==SCORES && (was_pressed(LEFT) || was_pressed(RIGHT))) {
+            pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock);
         }
         if (state==RECHARGE) {
             if (was_pressed(UP) && recharge_selected > 0) recharge_selected--;
@@ -356,8 +412,8 @@ int main(void) {
             DrawText("RFID",CX-28,196,21,WHITE); DrawText(rfid_ok?"Aproxime o cartao":"Modo demo: pressione DIREITA",CX-170,315,22,rfid_ok?RAYWHITE:GOLD);
         } else if (state==MENU) {
             DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Cartao %s   |   Creditos: %d",card,credits),CX-170,58,20,GOLD);
-            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","ENCERRAR CARTAO"};
-            for (int i=0;i<5;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,92+i*58,440,45},.2f,8,c); DrawText(items[i],230,104+i*58,20,WHITE); if(i==selected)DrawText(">",195,104+i*58,22,YELLOW); }
+            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","PLACAR","ENCERRAR CARTAO"};
+            for (int i=0;i<6;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,82+i*50,440,39},.2f,8,c); DrawText(items[i],230,91+i*50,18,WHITE); if(i==selected)DrawText(">",195,91+i*50,20,YELLOW); }
             DrawText("Joystick: cima/baixo seleciona | direita confirma | esquerda volta",65,425,16,LIGHTGRAY);
         } else if (state==RECHARGE) {
             const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
@@ -366,6 +422,18 @@ int main(void) {
             for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,155+i*55,390,42},.2f,8,c); DrawText(packs[i],270,165+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,165+i*55,22,YELLOW); }
             DrawText("Qualquer usuario pode recarregar neste modo demo",150,395,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
+        } else if (state==SCORES) {
+            ScoreEntry entries[12]; int count = score_load(entries, 12);
+            DrawText("PLACAR", CX-58, 30, 32, GOLD);
+            DrawText("Melhores pontuacoes por cartao e jogo", CX-175, 68, 18, LIGHTGRAY);
+            if (count == 0) DrawText("Jogue uma partida para entrar no placar.", CX-190, 205, 22, RAYWHITE);
+            for (int i = 0; i < count; i++) {
+                DrawText(TextFormat("%d.", i+1), 150, 105+i*26, 19, YELLOW);
+                DrawText(entries[i].card, 195, 105+i*26, 19, RAYWHITE);
+                DrawText(entries[i].game, 325, 105+i*26, 19, SKYBLUE);
+                DrawText(TextFormat("%d", entries[i].score), 565, 105+i*26, 19, GREEN);
+            }
+            DrawText("Esquerda ou direita para voltar", CX-135, 430, 17, LIGHTGRAY);
         } else if (state==SNAKE) draw_snake();
         else if (state==ASTEROIDS) draw_asteroids();
         else { DrawRectangleRounded((Rectangle){110,160,580,150},.15f,8,(Color){35,40,82,255}); DrawText(note,CX-MeasureText(note,27)/2,215,27,WHITE); }

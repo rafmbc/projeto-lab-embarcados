@@ -10,8 +10,8 @@ Os quatro botões do direcional/joystick usam a numeração BCM já validada na 
 
 | Controle | BCM | No arcade |
 |---|---:|---|
-| Cima (S4 azul) | 26 | Seleciona / sobe na Cobrinha |
-| Esquerda (S5 amarelo) | 20 | Volta no menu / move |
+| Cima (S4 azul) | 20 | Seleciona / sobe na Cobrinha |
+| Esquerda (S5 amarelo) | 26 | Volta no menu / move |
 | Direita (S7 verde) | 16 | Confirma no menu / move |
 | Baixo (S6 vermelho) | 21 | Seleciona / desce na Cobrinha |
 | Buzzer ativo | 12 | Feedback: toque, início e fim de partida |
@@ -58,3 +58,9 @@ i2cdetect -y 1
 ```
 
 O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa, os eixos foram invertidos para corresponder aos movimentos físicos; o clique equivale a confirmar (`direita`) no menu. Botões físicos têm prioridade sobre o joystick. Se `48` não aparecer, confira a chave/cabeamento do módulo ADC da Projects Board; os botões continuam disponíveis como alternativa.
+
+## Controles e placar
+
+- **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
+- **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
+- **PLACAR:** registra a melhor pontuação de cada cartão em cada jogo no arquivo `placar.csv`. Se o arquivo ainda não existir, ele é criado automaticamente ao terminar a primeira partida.
