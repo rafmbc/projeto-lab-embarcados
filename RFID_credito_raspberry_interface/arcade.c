@@ -34,6 +34,7 @@ static inline void MFRC522_Halt(void) {}
 #define CX (W/2)
 #define CSV_FILE "cartoes.csv"
 #define SCORE_FILE "placar.csv"
+#define CODE_FILE "codigos.csv"
 #define PIN_UP 20
 #define PIN_LEFT 26
 #define PIN_RIGHT 16
@@ -48,7 +49,7 @@ static inline void MFRC522_Halt(void) {}
 #define COST 1
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, MENU, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef enum { WAIT_CARD, CARD_CODE, MENU, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { float x, y, speed, radius; } Rock;
 typedef struct { char card[9]; char game[16]; int score; } ScoreEntry;
@@ -56,6 +57,7 @@ typedef struct {
     pthread_mutex_t lock;
     State state;
     char card[9];
+    char code[4];
     int credits;
     int rfid_online;
     char message[96];
@@ -71,6 +73,9 @@ static int buzz_edges;
 static double buzz_at, message_at;
 static int selected, recharge_selected;
 static char active_card[9];
+static char code_letters[4] = "AAA";
+static int code_index;
+static char code_error[64];
 
 /* Cobrinha */
 #define COLS 18
@@ -129,6 +134,42 @@ static int csv_write(const char *card, int credits) {
     if (!out) return -1;
     for (int i = 0; i < count; i++) fputs(lines[i], out);
     fclose(out); return 0;
+}
+
+static void code_init(void) {
+    FILE *f = fopen(CODE_FILE, "r");
+    if (f) { fclose(f); return; }
+    f = fopen(CODE_FILE, "w");
+    if (f) { fputs("CardID,Codigo\n", f); fclose(f); }
+}
+
+static int card_code_read(const char *card, char *code) {
+    FILE *f; char line[64], id[9], value[4];
+    code_init(); f = fopen(CODE_FILE, "r"); if (!f) return 0;
+    fgets(line, sizeof line, f);
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "%8[^,],%3[A-F]", id, value) == 2 && !strcmp(id, card)) { strcpy(code, value); fclose(f); return 1; }
+    fclose(f); return 0;
+}
+
+static int card_code_write(const char *card, const char *code) {
+    FILE *f; char line[64], id[9], value[4];
+    code_init(); f = fopen(CODE_FILE, "r"); if (!f) return -1;
+    fgets(line, sizeof line, f);
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "%8[^,],%3[A-F]", id, value) == 2 && !strcmp(value, code) && strcmp(id, card)) { fclose(f); return -2; }
+    fclose(f); f = fopen(CODE_FILE, "a"); if (!f) return -1;
+    fprintf(f, "%s,%s\n", card, code); fclose(f); return 0;
+}
+
+static void card_activate(const char *card) {
+    char code[4] = {0}; int registered;
+    csv_init(); registered = card_code_read(card, code);
+    pthread_mutex_lock(&app.lock);
+    strcpy(app.card, card); app.credits = csv_read(card);
+    if (registered) { strcpy(app.code, code); app.state = MENU; }
+    else { app.code[0] = 0; app.state = CARD_CODE; code_letters[0] = code_letters[1] = code_letters[2] = 'A'; code_index = 0; code_error[0] = 0; }
+    pthread_mutex_unlock(&app.lock);
 }
 
 static void score_init(void) {
@@ -278,10 +319,8 @@ static void *rfid_loop(void *unused) {
         if (MFRC522_Request(PICC_REQIDL, tag) != MI_OK || MFRC522_Anticoll(serial) != MI_OK || MFRC522_SelectTag(serial) == 0) {
             MFRC522_Halt(); usleep(50000); continue;
         }
-        char card[9]; card_string(serial, card); csv_init();
-        pthread_mutex_lock(&app.lock);
-        strcpy(app.card, card); app.credits = csv_read(card); app.state = MENU;
-        pthread_mutex_unlock(&app.lock);
+        char card[9]; card_string(serial, card);
+        card_activate(card);
         buzzer_play(2); MFRC522_Halt();
     }
     return NULL;
@@ -376,11 +415,34 @@ int main(void) {
     InitWindow(W,H,"Arcade RFID"); SetTargetFPS(60); controls_init();
     while (!WindowShouldClose()) {
         controls_poll();
-        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); int credits=app.credits; char note[96]; strcpy(note,app.message); int back=app.message_to_menu; pthread_mutex_unlock(&app.lock);
+        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; char note[96]; strcpy(note,app.message); int back=app.message_to_menu; pthread_mutex_unlock(&app.lock);
 #ifdef RFID_DUMMY
-        if (state==WAIT_CARD && (was_pressed(RIGHT) || IsKeyPressed(KEY_ENTER))) { csv_init(); strcpy(card,"DEMO0001"); pthread_mutex_lock(&app.lock); strcpy(app.card,card); app.credits=csv_read(card); app.state=MENU; pthread_mutex_unlock(&app.lock); buzzer_play(2); }
+        if (state==WAIT_CARD && (was_pressed(RIGHT) || IsKeyPressed(KEY_ENTER))) { card_activate("DEMO0001"); buzzer_play(2); }
 #endif
         if (state==MESSAGE && GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); }
+        if (state==CARD_CODE) {
+            if (button_was_pressed(UP))
+                code_letters[code_index] = code_letters[code_index] == 70 ? 65 : code_letters[code_index] + 1;
+            if (button_was_pressed(DOWN))
+                code_letters[code_index] = code_letters[code_index] == 65 ? 70 : code_letters[code_index] - 1;
+            if (button_was_pressed(RIGHT)) {
+                if (code_index < 2) {
+                    code_index++;
+                } else {
+                    int result = card_code_write(card, code_letters);
+                    if (result == 0) {
+                        pthread_mutex_lock(&app.lock);
+                        strcpy(app.code, code_letters); app.state = MENU;
+                        pthread_mutex_unlock(&app.lock);
+                        selected = 0; buzzer_play(2);
+                    } else {
+                        snprintf(code_error, sizeof code_error, result == -2 ? "Esse codigo ja esta em uso." : "Erro ao salvar codigo.");
+                        code_letters[0] = code_letters[1] = code_letters[2] = 65;
+                        code_index = 0; buzzer_play(3);
+                    }
+                }
+            }
+        }
         if (state==MENU) {
             if (was_pressed(UP) && selected > 0) selected--;
             if (was_pressed(DOWN) && selected < 5) selected++;
@@ -413,15 +475,29 @@ int main(void) {
             DrawText("RFID",CX-28,196,21,WHITE);
             const char *prompt = rfid_ok ? "Aproxime o cartao" : "Modo demo: pressione DIREITA";
             DrawText(prompt, CX - MeasureText(prompt, 22)/2, 315, 22, rfid_ok ? RAYWHITE : GOLD);
+        } else if (state==CARD_CODE) {
+            DrawText("NOVO CARTAO", CX-108, 65, 31, GOLD);
+            DrawText("CRIE SEU CODIGO", CX-125, 112, 25, RAYWHITE);
+            DrawText("Escolha tres letras de A a F", CX-154, 145, 18, LIGHTGRAY);
+            for (int i = 0; i < 3; i++) {
+                int x = CX - 126 + i*84;
+                Color border = i == code_index ? YELLOW : (Color){110,120,175,255};
+                DrawRectangleRounded((Rectangle){x,190,62,72}, .18f, 8, (Color){35,45,85,255});
+                DrawRectangleRoundedLines((Rectangle){x,190,62,72}, .18f, 8, border);
+                char shown[2] = { i <= code_index ? code_letters[i] : 95, 0 };
+                DrawText(shown, x + 22, 208, 35, WHITE);
+            }
+            DrawText("Azul sobe  |  Vermelho desce  |  Verde confirma", CX-250, 305, 18, LIGHTGRAY);
+            if (code_error[0]) DrawText(code_error, CX-MeasureText(code_error,18)/2, 350, 18, RED);
         } else if (state==MENU) {
-            DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Cartao %s   |   Creditos: %d",card,credits),CX-170,58,20,GOLD);
+            DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Codigo %s   |   Creditos: %d",public_code,credits),CX-150,58,20,GOLD);
             const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","PLACAR","ENCERRAR CARTAO"};
             for (int i=0;i<6;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,82+i*50,440,39},.2f,8,c); DrawText(items[i],230,91+i*50,18,WHITE); if(i==selected)DrawText(">",195,91+i*50,20,YELLOW); }
             DrawText("Joystick: cima/baixo seleciona | direita confirma | esquerda volta",65,425,16,LIGHTGRAY);
         } else if (state==RECHARGE) {
             const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
             DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);
-            DrawText(TextFormat("Cartao %s   |   Saldo: %d",card,credits),CX-160,112,20,RAYWHITE);
+            DrawText(TextFormat("Codigo %s   |   Saldo: %d",public_code,credits),CX-145,112,20,RAYWHITE);
             for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,155+i*55,390,42},.2f,8,c); DrawText(packs[i],270,165+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,165+i*55,22,YELLOW); }
             DrawText("Qualquer usuario pode recarregar neste modo demo",150,395,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
@@ -437,12 +513,14 @@ int main(void) {
             if (asteroid_count == 0) DrawText("Sem scores", 475, 115, 18, LIGHTGRAY);
             for (int i = 0; i < snake_count; i++) {
                 DrawText(TextFormat("%d.", i+1), 95, 112+i*27, 18, YELLOW);
-                DrawText(snake_scores[i].card, 135, 112+i*27, 18, RAYWHITE);
+                char display_code[4] = "---"; card_code_read(snake_scores[i].card, display_code);
+                DrawText(display_code, 135, 112+i*27, 18, RAYWHITE);
                 DrawText(TextFormat("%d", snake_scores[i].score), 300, 112+i*27, 18, GREEN);
             }
             for (int i = 0; i < asteroid_count; i++) {
                 DrawText(TextFormat("%d.", i+1), 430, 112+i*27, 18, YELLOW);
-                DrawText(asteroid_scores[i].card, 470, 112+i*27, 18, RAYWHITE);
+                char display_code[4] = "---"; card_code_read(asteroid_scores[i].card, display_code);
+                DrawText(display_code, 470, 112+i*27, 18, RAYWHITE);
                 DrawText(TextFormat("%d", asteroid_scores[i].score), 635, 112+i*27, 18, GREEN);
             }
             DrawText("Esquerda ou direita para voltar", CX-135, 430, 17, LIGHTGRAY);

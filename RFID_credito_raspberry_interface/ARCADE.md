@@ -64,3 +64,9 @@ O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa
 - **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
 - **PLACAR:** mostra Cobrinha e Asteroides em duas colunas independentes na mesma tela. Registra a melhor pontuação de cada cartão por jogo no arquivo `placar.csv`, criado automaticamente ao terminar a primeira partida.
+
+## Código público do cartão
+
+O UID RFID nunca é mostrado na interface. No primeiro uso de um cartão, aparece a tela **CRIAR SEU CODIGO** com três posições. Cada posição começa em `A`; botão azul avança `A → B → C → D → E → F → A`, vermelho volta no ciclo e verde confirma a letra atual. Após a terceira confirmação, o código é gravado em `codigos.csv` e passa a identificar o jogador no menu, na recarga e no placar.
+
+Os códigos são únicos e existem 216 combinações possíveis (`AAA` até `FFF`).
