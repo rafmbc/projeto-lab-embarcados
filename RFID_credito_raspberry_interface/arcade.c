@@ -480,15 +480,14 @@ int main(void) {
             DrawText("CRIE SEU CODIGO", CX-125, 112, 25, RAYWHITE);
             DrawText("Escolha tres letras de A a F", CX-154, 145, 18, LIGHTGRAY);
             for (int i = 0; i < 3; i++) {
-                int x = CX - 126 + i*84;
-                Color border = i == code_index ? YELLOW : (Color){110,120,175,255};
-                DrawRectangleRounded((Rectangle){x,190,62,72}, .18f, 8, (Color){35,45,85,255});
-                DrawRectangleRoundedLines((Rectangle){x,190,62,72}, .18f, 8, border);
+                int x = CX - 70 + i*70;
                 char shown[2] = { i <= code_index ? code_letters[i] : 95, 0 };
-                DrawText(shown, x + 22, 208, 35, WHITE);
+                Color color = i == code_index ? YELLOW : RAYWHITE;
+                DrawText(shown, x, 195, 42, color);
+                DrawRectangle(x - 2, 245, 35, i == code_index ? 4 : 2, color);
             }
-            DrawText("Azul sobe  |  Vermelho desce  |  Verde confirma", CX-250, 305, 18, LIGHTGRAY);
-            if (code_error[0]) DrawText(code_error, CX-MeasureText(code_error,18)/2, 350, 18, RED);
+            DrawText("Azul sobe  |  Vermelho desce  |  Verde confirma", CX-250, 285, 18, LIGHTGRAY);
+            if (code_error[0]) DrawText(code_error, CX-MeasureText(code_error,18)/2, 330, 18, RED);
         } else if (state==MENU) {
             DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Codigo %s   |   Creditos: %d",public_code,credits),CX-150,58,20,GOLD);
             const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","PLACAR","ENCERRAR CARTAO"};
