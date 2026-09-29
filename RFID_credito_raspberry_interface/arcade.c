@@ -362,7 +362,9 @@ static void snake_food(void) {
     } while (on_snake);
 }
 
+static float snake_speed;
 static void start_snake(void) {
+    snake_speed=0.3;
     snake_len = 4; for (int i = 0; i < snake_len; i++) snake[i] = (Cell){8-i, 5};
     dx = next_dx = 1; dy = next_dy = 0; snake_score = 0; snake_at = GetTime()+0.18; snake_food();
 }
@@ -423,7 +425,7 @@ static void draw_snake(void) {
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
-        if (ate) { snake_score += 10; snake_food(); } snake_at=GetTime()+0.13;
+        if (ate) { snake_score += 10; snake_speed*=0.95; snake_food(); } snake_at=GetTime()+snake_speed; //0.13;
     }
     draw_header("COBRINHA", snake_score);
     DrawText("Use os botoes direcionais", CX-130, 72, 18, LIGHTGRAY);
