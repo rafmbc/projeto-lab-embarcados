@@ -113,7 +113,7 @@ static Rock rocks[ROCKS];
 static int asteroid_score;
 static int destroyedMeteorsCount;
 static double asteroid_at;
-#define PLAYER_MAX_SHOTS   10
+#define PLAYER_MAX_SHOTS   5
 static Shoot shots[PLAYER_MAX_SHOTS];
 static const int screenWidth = 800;
 static const int screenHeight = 450;
@@ -377,6 +377,7 @@ static void init_shot(Shoot *shot) {
 
 static void start_asteroids(void) {
     destroyedMeteorsCount=0;
+    asteroid_score=0;
     player.position.x = CX; asteroid_score = 0; asteroid_at = GetTime();
     
     player.position = (Vector2){screenWidth/2, screenHeight/2 - shipHeight/2};
@@ -425,7 +426,7 @@ static void draw_snake(void) {
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
-        if (ate) { snake_score += 10; snake_speed*=0.95; snake_food(); } snake_at=GetTime()+snake_speed; //0.13;
+        if (ate) { snake_score += 10; snake_speed*=0.93; snake_food(); } snake_at=GetTime()+snake_speed;
     }
     draw_header("COBRINHA", snake_score);
     DrawText("Use os botoes direcionais", CX-130, 72, 18, LIGHTGRAY);
@@ -450,7 +451,7 @@ static void draw_asteroids(void) {
     if (joystick_is_held(RIGHT)) player.position.x+=340*dt;
     if (player.position.x<24) player.position.x=24;
     if (player.position.x>W-24) player.position.x=W-24;
-    asteroid_score=(int)((GetTime()-asteroid_at)*10);
+    asteroid_score=(int)((GetTime()-asteroid_at)*10)+destroyedMeteorsCount*20;
     for (int i=0;i<ROCKS;i++) {
         rocks[i].y+=rocks[i].speed*dt;
         if (rocks[i].y>H+rocks[i].radius) init_rock(i);
@@ -466,7 +467,7 @@ static void draw_asteroids(void) {
             if (!shots[i].active)
             {
                 Vector2 rot = player_rot();
-                shots[i].position = (Vector2){ player.position.x + rot.x*(shipHeight), player.position.y - rot.y*(shipHeight) };
+                shots[i].position = (Vector2){ player.position.x + rot.x*(shipHeight), 440 };
                 shots[i].active = true;
                 shots[i].speed.x = 1.5*rot.x*PLAYER_SPEED;
                 shots[i].speed.y = 1.5*rot.y*PLAYER_SPEED;
@@ -512,7 +513,10 @@ static void draw_asteroids(void) {
                     shots[i].lifeSpawn = 0;
                     // bigMeteor[a].active = false;
                     destroyedMeteorsCount++;
-                    init_rock(a);
+                    
+                    printf("%f", rocks[a].radius);
+                    if (rocks[a].radius > 18) { rocks[a].radius=(int)rocks[a].radius*0.7; rocks[a].y+=20; }
+                    else init_rock(a);
 
                     /* for (int j = 0; j < 2; j ++)
                     {
