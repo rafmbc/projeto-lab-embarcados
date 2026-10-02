@@ -35,8 +35,8 @@ static inline void MFRC522_Halt(void) {}
 #define H 480
 #define CX (W/2)
 #define CSV_FILE "cartoes.csv"
-#define SCORE_FILE "placar.csv"
-#define CODE_FILE "codigos.csv"
+#define CSV_HEADER "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides\n"
+#define CSV_LINE_MAX 64
 #define PIN_UP 20
 #define PIN_LEFT 26
 #define PIN_RIGHT 16
@@ -124,68 +124,68 @@ static void card_string(const uint8_t *id, char *out) {
     snprintf(out, 9, "%02X%02X%02X%02X", id[0], id[1], id[2], id[3]);
 }
 
+/* ponytail: uma linha por cartao. Teto: 128 cartoes. Upgrade path: SQLite. */
+typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; } Row;
+
+static int csv_load(Row *rows, int limit) {
+    FILE *f = fopen(CSV_FILE, "r"); if (!f) return 0;
+    char line[CSV_LINE_MAX]; int n = 0;
+    fgets(line, sizeof line, f);
+    while (n < limit && fgets(line, sizeof line, f)) {
+        Row r = {0};
+        sscanf(line, "%8[^,],%d,%3[^,],%d,%d", r.card, &r.credits, r.code, &r.snake, &r.asteroid);
+        if (r.card[0]) rows[n++] = r;
+    }
+    fclose(f); return n;
+}
+
+static void csv_save(Row *rows, int n) {
+    FILE *f = fopen(CSV_FILE, "w"); if (!f) return;
+    fputs(CSV_HEADER, f);
+    for (int i = 0; i < n; i++)
+        fprintf(f, "%s,%d,%s,%d,%d\n", rows[i].card, rows[i].credits, rows[i].code, rows[i].snake, rows[i].asteroid);
+    fclose(f);
+}
+
 static void csv_init(void) {
     FILE *f = fopen(CSV_FILE, "r");
     if (f) { fclose(f); return; }
     f = fopen(CSV_FILE, "w");
-    if (f) { fputs("CardID,Credito\n", f); fclose(f); }
+    if (f) { fputs(CSV_HEADER, f); fclose(f); }
+}
+
+static Row *csv_find(Row *rows, int n, const char *card) {
+    for (int i = 0; i < n; i++) if (!strcmp(rows[i].card, card)) return &rows[i];
+    return NULL;
 }
 
 static int csv_read(const char *card) {
-    FILE *f = fopen(CSV_FILE, "r");
-    char line[64], id[9]; int value;
-    if (!f) return 0;
-    fgets(line, sizeof line, f);
-    while (fgets(line, sizeof line, f))
-        if (sscanf(line, "%8[^,],%d", id, &value) == 2 && !strcmp(id, card)) {
-            fclose(f); return value;
-        }
-    fclose(f); return 0;
+    Row rows[128]; int n = csv_load(rows, 128);
+    Row *r = csv_find(rows, n, card); return r ? r->credits : 0;
 }
 
 static int csv_write(const char *card, int credits) {
-    FILE *in = fopen(CSV_FILE, "r"), *out;
-    char lines[128][64], id[9]; int value, count = 0, found = 0;
-    if (!in) return -1;
-    while (count < 128 && fgets(lines[count], sizeof lines[count], in)) {
-        if (count && sscanf(lines[count], "%8[^,],%d", id, &value) == 2 && !strcmp(id, card)) {
-            snprintf(lines[count], sizeof lines[count], "%s,%d\n", card, credits);
-            found = 1;
-        }
-        count++;
-    }
-    fclose(in);
-    if (!found && count < 128) snprintf(lines[count++], sizeof lines[0], "%s,%d\n", card, credits);
-    out = fopen(CSV_FILE, "w");
-    if (!out) return -1;
-    for (int i = 0; i < count; i++) fputs(lines[i], out);
-    fclose(out); return 0;
-}
-
-static void code_init(void) {
-    FILE *f = fopen(CODE_FILE, "r");
-    if (f) { fclose(f); return; }
-    f = fopen(CODE_FILE, "w");
-    if (f) { fputs("CardID,Codigo\n", f); fclose(f); }
+    Row rows[128]; int n = csv_load(rows, 128);
+    Row *r = csv_find(rows, n, card);
+    if (r) { r->credits = credits; }
+    else { if (n >= 128) return -1; strncpy(rows[n].card, card, 8); rows[n].credits = credits; n++; }
+    csv_save(rows, n); return 0;
 }
 
 static int card_code_read(const char *card, char *code) {
-    FILE *f; char line[64], id[9], value[4];
-    code_init(); f = fopen(CODE_FILE, "r"); if (!f) return 0;
-    fgets(line, sizeof line, f);
-    while (fgets(line, sizeof line, f))
-        if (sscanf(line, "%8[^,],%3[A-F]", id, value) == 2 && !strcmp(id, card)) { strcpy(code, value); fclose(f); return 1; }
-    fclose(f); return 0;
+    Row rows[128]; int n = csv_load(rows, 128);
+    Row *r = csv_find(rows, n, card);
+    if (r && r->code[0]) { strcpy(code, r->code); return 1; } return 0;
 }
 
 static int card_code_write(const char *card, const char *code) {
-    FILE *f; char line[64], id[9], value[4];
-    code_init(); f = fopen(CODE_FILE, "r"); if (!f) return -1;
-    fgets(line, sizeof line, f);
-    while (fgets(line, sizeof line, f))
-        if (sscanf(line, "%8[^,],%3[A-F]", id, value) == 2 && !strcmp(value, code) && strcmp(id, card)) { fclose(f); return -2; }
-    fclose(f); f = fopen(CODE_FILE, "a"); if (!f) return -1;
-    fprintf(f, "%s,%s\n", card, code); fclose(f); return 0;
+    Row rows[128]; int n = csv_load(rows, 128);
+    for (int i = 0; i < n; i++)
+        if (!strcmp(rows[i].code, code) && strcmp(rows[i].card, card)) return -2;
+    Row *r = csv_find(rows, n, card);
+    if (r) { strncpy(r->code, code, 3); }
+    else { if (n >= 128) return -1; strncpy(rows[n].card, card, 8); strncpy(rows[n].code, code, 3); n++; }
+    csv_save(rows, n); return 0;
 }
 
 static void card_activate(const char *card) {
@@ -198,40 +198,28 @@ static void card_activate(const char *card) {
     pthread_mutex_unlock(&app.lock);
 }
 
-static void score_init(void) {
-    FILE *f = fopen(SCORE_FILE, "r");
-    if (f) { fclose(f); return; }
-    f = fopen(SCORE_FILE, "w");
-    if (f) { fputs("CardID,Jogo,Pontuacao\n", f); fclose(f); }
-}
-
+/* Registra score; mantem apenas o melhor por jogo. */
 static void score_record(const char *card, const char *game, int score) {
-    FILE *in, *out; char lines[128][80], id[9], name[16]; int value, count = 0, found = 0;
-    score_init(); in = fopen(SCORE_FILE, "r"); if (!in) return;
-    while (count < 128 && fgets(lines[count], sizeof lines[count], in)) {
-        if (count && sscanf(lines[count], "%8[^,],%15[^,],%d", id, name, &value) == 3 && !strcmp(id, card) && !strcmp(name, game)) {
-            if (score > value) snprintf(lines[count], sizeof lines[count], "%s,%s,%d\n", card, game, score);
-            found = 1;
-        }
-        count++;
-    }
-    fclose(in);
-    if (!found && count < 128) snprintf(lines[count++], sizeof lines[0], "%s,%s,%d\n", card, game, score);
-    out = fopen(SCORE_FILE, "w"); if (!out) return;
-    for (int i = 0; i < count; i++) fputs(lines[i], out);
-    fclose(out);
+    Row rows[128]; int n = csv_load(rows, 128);
+    Row *r = csv_find(rows, n, card);
+    if (!r) { if (n >= 128) return; strncpy(rows[n].card, card, 8); rows[n].credits = csv_read(card); r = &rows[n++]; }
+    if (!strcmp(game, "Cobrinha")  && score > r->snake)    r->snake    = score;
+    if (!strcmp(game, "Asteroides") && score > r->asteroid) r->asteroid = score;
+    csv_save(rows, n);
 }
 
 static int score_load(ScoreEntry *entries, int limit, const char *game) {
-    FILE *f; char line[80]; int count = 0; ScoreEntry candidate;
-    score_init(); f = fopen(SCORE_FILE, "r"); if (!f) return 0;
-    fgets(line, sizeof line, f);
-    while (count < limit && fgets(line, sizeof line, f))
-        if (sscanf(line, "%8[^,],%15[^,],%d", candidate.card, candidate.game, &candidate.score) == 3 && !strcmp(candidate.game, game))
-            entries[count++] = candidate;
-    fclose(f);
-    for (int i = 0; i < count; i++) for (int j = i + 1; j < count; j++)
-        if (entries[j].score > entries[i].score) { ScoreEntry tmp = entries[i]; entries[i] = entries[j]; entries[j] = tmp; }
+    Row rows[128]; int n = csv_load(rows, 128), count = 0;
+    int is_snake = !strcmp(game, "Cobrinha");
+    for (int i = 0; i < n && count < limit; i++) {
+        int s = is_snake ? rows[i].snake : rows[i].asteroid;
+        if (!s) continue;
+        strncpy(entries[count].card, rows[i].card, 8);
+        strncpy(entries[count].game, game, 15);
+        entries[count].score = s; count++;
+    }
+    for (int i = 0; i < count; i++) for (int j = i+1; j < count; j++)
+        if (entries[j].score > entries[i].score) { ScoreEntry t = entries[i]; entries[i] = entries[j]; entries[j] = t; }
     return count;
 }
 
