@@ -183,13 +183,13 @@ static void card_activate(const char *card) {
 }
 
 /* Registra score; mantem apenas o melhor por jogo. */
-static void score_record(const char *card, const char *game, int score) {
-    Row rows[128]; int n = csv_load(rows, 128);
+static int score_record(const char *card, const char *game, int score) {
+    Row rows[128]; int n = csv_load(rows, 128); int record = 0;
     Row *r = csv_find(rows, n, card);
-    if (!r) { if (n >= 128) return; strncpy(rows[n].card, card, 8); rows[n].credits = csv_read(card); r = &rows[n++]; }
-    if (!strcmp(game, "Cobrinha")  && score > r->snake)    r->snake    = score;
-    if (!strcmp(game, "Asteroides") && score > r->asteroid) r->asteroid = score;
-    csv_save(rows, n);
+    if (!r) { if (n >= 128) return 0; strncpy(rows[n].card, card, 8); rows[n].credits = csv_read(card); r = &rows[n++]; }
+    if (!strcmp(game, "Cobrinha")  && score > r->snake)    { r->snake    = score; record = 1; }
+    if (!strcmp(game, "Asteroides") && score > r->asteroid) { r->asteroid = score; record = 1; }
+    csv_save(rows, n); return record;
 }
 
 static int score_load(ScoreEntry *entries, int limit, const char *game) {
@@ -209,16 +209,20 @@ static int score_load(ScoreEntry *entries, int limit, const char *game) {
 
 /* Melodias 8-bit: {frequencia Hz, duracao ms}, terminadas em {0,0}. Exige buzzer PASSIVO.
  * VOLUME: duty da onda quadrada; 50% = volume maximo, 15% = 30% disso. */
-#define BUZZ_DUTY 0.06
+#define BUZZ_DUTY 0.02
 #define NOTE_GAP_MS 90
 typedef struct { int f, ms; } Note;
 static const Note SNAKE_START[]    = {{523,90},{659,90},{784,90},{1047,200},{0,0}};
-static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{196,400},{0,0}};
+static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{196,200},{0,0}};
 static const Note ASTEROID_START[] = {{262,80},{392,80},{523,80},{392,80},{523,80},{784,220},{0,0}};
-static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,450},{0,0}};
+static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,200},{0,0}};
+static const Note NEW_RECORD[]     = {{523,100},{659,100},{784,100},{1047,100},{784,100},{1047,100},{1319,300},{0,0}};
 static volatile int melody_on;
-static void *melody_thread(void *arg) {
-    for (const Note *n = arg; n->ms; n++) {
+static const Note *melody_queue[2];
+
+static void play_notes(const Note *notes) {
+    if (!notes) return;
+    for (const Note *n = notes; n->ms; n++) {
         int period = 1000000/n->f, high = (int)(period*BUZZ_DUTY), cycles = n->ms*1000/period;
         for (int c = 0; c < cycles; c++) {
             digitalWrite(PIN_BUZZER, HIGH); delayMicroseconds(high);
@@ -226,13 +230,22 @@ static void *melody_thread(void *arg) {
         }
         usleep(NOTE_GAP_MS*1000);
     }
+}
+
+static void *melody_thread(void *arg) {
+    (void)arg;
+    play_notes(melody_queue[0]);
+    if (melody_queue[1]) { usleep(600000); play_notes(melody_queue[1]); }
     melody_on = 0; return NULL;
 }
 
-static void melody_play(const Note *notes) {
+static void melody_play2(const Note *n1, const Note *n2) {
     if (melody_on) return;
-    melody_on = 1; pthread_t t; pthread_create(&t, NULL, melody_thread, (void *)notes); pthread_detach(t);
+    melody_on = 1; melody_queue[0] = n1; melody_queue[1] = n2;
+    pthread_t t; pthread_create(&t, NULL, melody_thread, NULL); pthread_detach(t);
 }
+
+static void melody_play(const Note *notes) { melody_play2(notes, NULL); }
 
 static void buzzer_play(int pulses) {
     if (melody_on) return;
@@ -307,13 +320,16 @@ static int button_was_pressed(unsigned key) { return (button_pressed & key) != 0
 static int is_held(unsigned key) { return (held & key) != 0; }
 static int joystick_is_held(unsigned key) { return (joystick_held & key) != 0; }
 
+static double message_len = 2.2;
+static int message_record;
+
 static void show_message(const char *text, int return_menu) {
     pthread_mutex_lock(&app.lock);
     snprintf(app.message, sizeof app.message, "%s", text);
     app.message_to_menu = return_menu;
     app.state = MESSAGE;
     pthread_mutex_unlock(&app.lock);
-    message_at = GetTime();
+    message_at = GetTime(); message_len = 2.2; message_record = 0;
 }
 
 static void *rfid_loop(void *unused) {
@@ -385,6 +401,13 @@ static void recharge(const char *card, int credits, int value) {
     show_message(TextFormat("Recarga de +%d credito(s)", value), 1); buzzer_play(2);
 }
 
+static void game_over(const char *game, int score, const Note *over) {
+    int record = score_record(active_card, game, score);
+    show_message(TextFormat("%s: %d pontos", game, score), 1);
+    if (record) { message_record = 1; message_len = 5.0; }
+    melody_play2(over, record ? NEW_RECORD : NULL);
+}
+
 static void draw_header(const char *title, int score) {
     DrawText(title, 24, 18, 28, RAYWHITE);
     DrawText(TextFormat("Pontos: %d", score), W-170, 24, 20, YELLOW);
@@ -400,7 +423,7 @@ static void draw_snake(void) {
         Cell next = {snake[0].x+next_dx, snake[0].y+next_dy};
         int hit = next.x<0 || next.x>=COLS || next.y<0 || next.y>=ROWS;
         for (int i=0;i<snake_len;i++) if (snake[i].x==next.x && snake[i].y==next.y) hit=1;
-        if (hit) { score_record(active_card, "Cobrinha", snake_score); show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); melody_play(SNAKE_OVER); return; }
+        if (hit) { game_over("Cobrinha", snake_score, SNAKE_OVER); return; }
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
@@ -434,7 +457,7 @@ static void draw_asteroids(void) {
         rocks[i].y+=rocks[i].speed*dt;
         if (rocks[i].y>H+rocks[i].radius) init_rock(i);
         float x=rocks[i].x-player.position.x, y=rocks[i].y-(H-55), r=rocks[i].radius+18;
-        if (x*x+y*y<r*r) { score_record(active_card, "Asteroides", asteroid_score); show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); melody_play(ASTEROID_OVER); return; }
+        if (x*x+y*y<r*r) { game_over("Asteroides", asteroid_score, ASTEROID_OVER); return; }
     }
     
     // Player shoot logic
@@ -531,7 +554,7 @@ int main(void) {
             case WAIT_CARD:
                 break;
             case MESSAGE:
-                if (GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:WAIT_CARD; pthread_mutex_unlock(&app.lock); } break;
+                if (GetTime()-message_at>message_len) { pthread_mutex_lock(&app.lock); app.state=back?MENU:WAIT_CARD; pthread_mutex_unlock(&app.lock); } break;
             case CARD_CODE:
                 if (button_was_pressed(UP))
                     code_letters[code_index] = code_letters[code_index] == 70 ? 65 : code_letters[code_index] + 1;
@@ -647,6 +670,11 @@ int main(void) {
         } else {
             if (state==SNAKE) draw_snake();
             else if (state==ASTEROIDS) draw_asteroids();
+            else if (message_record) {
+                DrawRectangleRounded((Rectangle){110,140,580,200},.15f,8,(Color){60,45,10,255}); DrawRectangleRoundedLines((Rectangle){110,140,580,200},.15f,8,GOLD);
+                DrawText("NOVO RECORDE!",CX-MeasureText("NOVO RECORDE!",42)/2,170,42,GOLD);
+                DrawText(note,CX-MeasureText(note,27)/2,250,27,WHITE);
+            }
             else { DrawRectangleRounded((Rectangle){110,160,580,150},.15f,8,(Color){35,40,82,255}); DrawText(note,CX-MeasureText(note,27)/2,215,27,WHITE); }
         }
         EndDrawing();
