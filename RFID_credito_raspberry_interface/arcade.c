@@ -209,7 +209,7 @@ static int score_load(ScoreEntry *entries, int limit, const char *game) {
 
 /* Melodias 8-bit: {frequencia Hz, duracao ms}, terminadas em {0,0}. Exige buzzer PASSIVO.
  * VOLUME: duty da onda quadrada; 50% = volume maximo, 15% = 30% disso. */
-#define BUZZ_DUTY 0.15
+#define BUZZ_DUTY 0.06
 #define NOTE_GAP_MS 90
 typedef struct { int f, ms; } Note;
 static const Note SNAKE_START[]    = {{523,90},{659,90},{784,90},{1047,200},{0,0}};
