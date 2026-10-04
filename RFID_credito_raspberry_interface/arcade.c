@@ -545,7 +545,6 @@ int main(void) {
             case MESSAGE:
                 if (GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); } break;
             case CARD_CODE:
-                strWrite(code_letters, code_index);
                 if (button_was_pressed(UP))
                     code_letters[code_index] = code_letters[code_index] == 70 ? 65 : code_letters[code_index] + 1;
                 if (button_was_pressed(DOWN))
@@ -599,6 +598,11 @@ int main(void) {
                 break;
             default: break;
         }
+        if (state==SNAKE) display_number(snake_score);
+        else if (state==ASTEROIDS) display_number(asteroid_score);
+        else if (state==CARD_CODE) { char t[4]; for (int i=0;i<3;i++) t[i]=i<=code_index?code_letters[i]:'_'; t[3]=0; display_text(t); }
+        else if (state==WAIT_CARD) display_text("");
+        else display_text(public_code);
         BeginDrawing(); ClearBackground((Color){12,14,29,255});
         if (state==WAIT_CARD) {
             DrawText("ARCADE RFID", CX-105,75,32,RAYWHITE); DrawCircleLines(CX,205,78,(Color){100,120,255,220}); DrawCircle(CX,205,44,(Color){55,70,190,255});
@@ -654,7 +658,6 @@ int main(void) {
             }
             DrawText("Esquerda ou direita para voltar", CX-135, 430, 17, LIGHTGRAY);
         } else {
-            numWrite(snake_score);
             if (state==SNAKE) draw_snake();
             else if (state==ASTEROIDS) draw_asteroids();
             else { DrawRectangleRounded((Rectangle){110,160,580,150},.15f,8,(Color){35,40,82,255}); DrawText(note,CX-MeasureText(note,27)/2,215,27,WHITE); }
