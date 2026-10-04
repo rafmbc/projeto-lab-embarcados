@@ -29,14 +29,6 @@ sh run-arcade-rpi.sh
 
 `run-arcade-rpi.sh` define `LIBGL_ALWAYS_SOFTWARE=1`. Esta é a flag Mesa que força a renderização por CPU (llvmpipe), contornando falhas de driver OpenGL no Raspberry. Para tentar aceleração por GPU, execute `./RFID_arcade` diretamente.
 
-## Teste no computador
-
-```sh
-sh build-arcade.sh demo
-sh run-arcade-demo.sh
-```
-
-No modo demo não acessa GPIO/RFID; setas ou WASD simulam o direcional e a seta direita abre o cartão `DEMO0001`.
 
 ## Atualizar o clone
 

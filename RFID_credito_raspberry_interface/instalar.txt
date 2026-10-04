@@ -39,6 +39,3 @@ sudo make install
 cd ~/PastaCompartilhada/RFID_credito_raspberry_interface
 sh build.sh
 
-
-gcc main.c -I include -lraylib -lm -lpthread -DRFID_DUMMY -o RFID_demo
-./RFID_demo

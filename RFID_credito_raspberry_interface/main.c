@@ -30,21 +30,7 @@
 #include <pthread.h>
 #include "raylib.h"
 
-/* Compilar com -DRFID_DUMMY para rodar sem hardware RFID */
-#ifndef RFID_DUMMY
 #include "mfrc522.h"
-#else
-/* Stubs minimos para compilar sem hardware */
-typedef int MFRC522_Status_t;
-#define MI_OK        0
-#define MI_NOTAGERR -1
-#define PICC_REQIDL  0x26
-static inline int     MFRC522_Init(char t)                        { (void)t; return -1; }
-static inline int     MFRC522_Request(uint8_t m, uint8_t *t)     { (void)m;(void)t; return MI_NOTAGERR; }
-static inline int     MFRC522_Anticoll(uint8_t *s)               { (void)s; return MI_NOTAGERR; }
-static inline int     MFRC522_SelectTag(uint8_t *s)              { (void)s; return 0; }
-static inline void    MFRC522_Halt(void)                          {}
-#endif
 
 /* ── CSV ─────────────────────────────────────────────────────────────── */
 #define CSV_FILE     "cartoes.csv"

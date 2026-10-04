@@ -1,35 +1,21 @@
 /* Arcade RFID para Raspberry Pi + Projects Board Freenove.
- * Hardware: direcional BCM 26/20/16/21 e buzzer ativo BCM 12.
- * O modo RFID_DUMMY permite testar no PC com as setas/WASD. */
+ * Hardware: direcional BCM 26/20/16/21 e buzzer BCM 4. */
 #define _DEFAULT_SOURCE
+#include <fcntl.h>
+#include <linux/i2c-dev.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include "raylib.h"
-#include <softTone.h>
-#include "display.c"
-
-#ifndef RFID_DUMMY
-#include <wiringPi.h>
-#include <fcntl.h>
 #include <sys/ioctl.h>
-#include <linux/i2c-dev.h>
+#include <unistd.h>
+#include <wiringPi.h>
+#include "display.c"
 #include "mfrc522.h"
-#else
-typedef int MFRC522_Status_t;
-#define MI_OK 0
-#define MI_NOTAGERR -1
-#define PICC_REQIDL 0x26
-static inline int MFRC522_Init(char t) { (void)t; return -1; }
-static inline int MFRC522_Request(uint8_t m, uint8_t *t) { (void)m; (void)t; return MI_NOTAGERR; }
-static inline int MFRC522_Anticoll(uint8_t *s) { (void)s; return MI_NOTAGERR; }
-static inline int MFRC522_SelectTag(uint8_t *s) { (void)s; return 0; }
-static inline void MFRC522_Halt(void) {}
-#endif
+#include "raylib.h"
+
 
 #define W 800
 #define H 480
@@ -78,16 +64,14 @@ typedef struct {
     char card[9];
     char code[4];
     int credits;
-    int rfid_online;
     char message[96];
     int message_to_menu;
 } App;
 
 static App app;
 static unsigned held, pressed, button_pressed, joystick_held;
-#ifndef RFID_DUMMY
 static int adc_fd = -1;
-#endif
+
 static int buzz_edges;
 static double buzz_at, message_at;
 static int selected, recharge_selected;
@@ -223,70 +207,60 @@ static int score_load(ScoreEntry *entries, int limit, const char *game) {
     return count;
 }
 
-/* Melodias 8-bit: {frequencia Hz, duracao ms}, terminadas em {0,0}. Exige buzzer PASSIVO (softTone). */
+/* Melodias 8-bit: {frequencia Hz, duracao ms}, terminadas em {0,0}. Exige buzzer PASSIVO.
+ * VOLUME: duty da onda quadrada; 50% = volume maximo, 15% = 30% disso. */
+#define BUZZ_DUTY 0.15
+#define NOTE_GAP_MS 90
 typedef struct { int f, ms; } Note;
 static const Note SNAKE_START[]    = {{523,90},{659,90},{784,90},{1047,200},{0,0}};
 static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{196,400},{0,0}};
 static const Note ASTEROID_START[] = {{262,80},{392,80},{523,80},{392,80},{523,80},{784,220},{0,0}};
 static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,450},{0,0}};
 static volatile int melody_on;
-#ifndef RFID_DUMMY
 static void *melody_thread(void *arg) {
     for (const Note *n = arg; n->ms; n++) {
-        softToneWrite(PIN_BUZZER, n->f); usleep(n->ms*1000);
-        softToneWrite(PIN_BUZZER, 0); usleep(15000);
+        int period = 1000000/n->f, high = (int)(period*BUZZ_DUTY), cycles = n->ms*1000/period;
+        for (int c = 0; c < cycles; c++) {
+            digitalWrite(PIN_BUZZER, HIGH); delayMicroseconds(high);
+            digitalWrite(PIN_BUZZER, LOW);  delayMicroseconds(period-high);
+        }
+        usleep(NOTE_GAP_MS*1000);
     }
     melody_on = 0; return NULL;
 }
-#endif
+
 static void melody_play(const Note *notes) {
-#ifndef RFID_DUMMY
     if (melody_on) return;
     melody_on = 1; pthread_t t; pthread_create(&t, NULL, melody_thread, (void *)notes); pthread_detach(t);
-#else
-    (void)notes;
-#endif
 }
 
 static void buzzer_play(int pulses) {
-#ifndef RFID_DUMMY
     if (melody_on) return;
     buzz_edges = pulses * 2;
     buzz_at = GetTime();
-#else
-    (void)pulses;
-#endif
 }
 
 static void controls_init(void) {
-#ifndef RFID_DUMMY
     if (wiringPiSetupGpio() == -1) { fputs("Erro ao iniciar GPIO.\n", stderr); return; }
     const int pins[] = { PIN_UP, PIN_LEFT, PIN_RIGHT, PIN_DOWN, PIN_JOYSTICK_Z };
     for (int i = 0; i < 5; i++) { pinMode(pins[i], INPUT); pullUpDnControl(pins[i], PUD_UP); }
-    pinMode(PIN_BUZZER, OUTPUT); softToneCreate(PIN_BUZZER); softToneWrite(PIN_BUZZER,0);
+    pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
     delayMicroseconds(5);
     adc_fd = open("/dev/i2c-1", O_RDWR);
     if (adc_fd >= 0 && ioctl(adc_fd, I2C_SLAVE, ADC_I2C_ADDRESS) < 0) { close(adc_fd); adc_fd = -1; }
     if (adc_fd < 0) fputs("Joystick analogico indisponivel: habilite I2C e verifique ADS7830 (0x48).\n", stderr);
-#endif
 }
 
 static int ads7830_read(int channel) {
-#ifndef RFID_DUMMY
     unsigned char command = (unsigned char)(0x84 | ((((channel << 2) | (channel >> 1)) & 0x07) << 4));
     unsigned char value;
     if (adc_fd < 0 || write(adc_fd, &command, 1) != 1 || read(adc_fd, &value, 1) != 1) return -1;
     return value;
-#else
-    (void)channel;
-    return -1;
-#endif
 }
 
 #define DELAY 0.035
 static void controls_poll(void) {
     unsigned old = held;
-#ifndef RFID_DUMMY
     /* Estabiliza o nivel por 35 ms. Evita que o bounce do S4 azul
        desapareca antes de virar um evento de navegacao. */
     static unsigned sampled;
@@ -320,22 +294,12 @@ static void controls_poll(void) {
     if (raw != sampled) { sampled = raw; sampled_at = GetTime(); }
     if (sampled != held && GetTime() - sampled_at >= DELAY) held = sampled;
     button_pressed = buttons_held & ~old_buttons;
-#else
-    held = (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W) ? UP : 0) |
-           (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A) ? LEFT : 0) |
-           (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D) ? RIGHT : 0) |
-           (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S) ? DOWN : 0);
-    joystick_held = held;
-    button_pressed = held & ~old;
-#endif
     pressed = held & ~old;
     if (pressed) buzzer_play(1);
-#ifndef RFID_DUMMY
     if (buzz_edges > 0 && GetTime() >= buzz_at) {
         digitalWrite(PIN_BUZZER, (buzz_edges & 1) == 0 ? HIGH : LOW);
         buzz_edges--; buzz_at = GetTime() + 0.07;
     } else if (!buzz_edges && !melody_on) digitalWrite(PIN_BUZZER, LOW);
-#endif
 }
 
 static int was_pressed(unsigned key) { return (pressed & key) != 0; }
@@ -555,21 +519,19 @@ static void draw_asteroids(void) {
 }
 
 int main(void) {
-    int rfid_ok = MFRC522_Init('B') == 0;
-    pthread_mutex_init(&app.lock, NULL); app.state=WAIT_CARD; app.rfid_online=rfid_ok;
-    if (rfid_ok) { pthread_t thread; pthread_create(&thread,NULL,rfid_loop,NULL); pthread_detach(thread); }
-    InitWindow(W,H,"Arcade RFID"); SetTargetFPS(60); controls_init();
+    if (MFRC522_Init('B') != 0) fputs("Erro ao iniciar RFID MFRC522.\n", stderr);
+    pthread_mutex_init(&app.lock, NULL); app.state = WAIT_CARD;
+    pthread_t thread; pthread_create(&thread, NULL, rfid_loop, NULL); pthread_detach(thread);
+    InitWindow(W, H, "Arcade RFID"); SetTargetFPS(60); controls_init();
     initDisplay();
     while (!WindowShouldClose()) {
         controls_poll();
         pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; char note[96]; strcpy(note,app.message); int back=app.message_to_menu; pthread_mutex_unlock(&app.lock);
-//#ifdef RFID_DUMMY
         switch(state){
             case WAIT_CARD:
-                if (was_pressed(RIGHT) || IsKeyPressed(KEY_ENTER)) { card_activate("DEMO0001"); buzzer_play(2); } break;
-//#endif
+                break;
             case MESSAGE:
-                if (GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:(rfid_ok?WAIT_CARD:MENU); pthread_mutex_unlock(&app.lock); } break;
+                if (GetTime()-message_at>2.2) { pthread_mutex_lock(&app.lock); app.state=back?MENU:WAIT_CARD; pthread_mutex_unlock(&app.lock); } break;
             case CARD_CODE:
                 if (button_was_pressed(UP))
                     code_letters[code_index] = code_letters[code_index] == 70 ? 65 : code_letters[code_index] + 1;
@@ -633,8 +595,7 @@ int main(void) {
         if (state==WAIT_CARD) {
             DrawText("ARCADE RFID", CX-105,75,32,RAYWHITE); DrawCircleLines(CX,205,78,(Color){100,120,255,220}); DrawCircle(CX,205,44,(Color){55,70,190,255});
             DrawText("RFID",CX-28,196,21,WHITE);
-            const char *prompt = rfid_ok ? "Aproxime o cartao" : "Modo demo: pressione DIREITA";
-            DrawText(prompt, CX - MeasureText(prompt, 22)/2, 315, 22, rfid_ok ? RAYWHITE : GOLD);
+            DrawText("Aproxime o cartao", CX - MeasureText("Aproxime o cartao", 22)/2, 315, 22, RAYWHITE);
         } else if (state==CARD_CODE) {
             DrawText("NOVO CARTAO", CX-108, 65, 31, GOLD);
             DrawText("CRIE SEU CODIGO", CX-125, 112, 25, RAYWHITE);
@@ -658,7 +619,7 @@ int main(void) {
             DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);
             DrawText(TextFormat("Codigo %s   |   Saldo: %d",public_code,credits),CX-145,112,20,RAYWHITE);
             for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,155+i*55,390,42},.2f,8,c); DrawText(packs[i],270,165+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,165+i*55,22,YELLOW); }
-            DrawText("Qualquer usuario pode recarregar neste modo demo",150,395,17,LIGHTGRAY);
+            DrawText("Selecione o pacote desejado",CX-120,395,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
         } else if (state==SCORES) {
             ScoreEntry snake_scores[10], asteroid_scores[10];
@@ -690,8 +651,6 @@ int main(void) {
         }
         EndDrawing();
     }
-#ifndef RFID_DUMMY
-    digitalWrite(PIN_BUZZER,LOW);
-#endif
+    digitalWrite(PIN_BUZZER, LOW);
     CloseWindow(); pthread_mutex_destroy(&app.lock); return 0;
 }
