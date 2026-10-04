@@ -36,8 +36,10 @@
 #define JOYSTICK_HIGH 175
 #define COST 1
 
+#define GAME_COUNT 2
+
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, CARD_CODE, MENU, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { float x, y, speed, radius; } Rock;
 typedef struct Shoot {
@@ -65,7 +67,7 @@ typedef struct {
     char code[4];
     int credits;
     char message[96];
-    int message_to_menu;
+    State message_back;
 } App;
 
 static App app;
@@ -74,7 +76,8 @@ static int adc_fd = -1;
 
 static int buzz_edges;
 static double buzz_at, message_at;
-static int selected, recharge_selected;
+static int selected, option_selected, recharge_selected;
+static const char *GAME_NAMES[GAME_COUNT] = {"COBRINHA", "ASTEROIDES"};
 static char active_card[9];
 static char code_letters[4] = "AAA";
 static int code_index;
@@ -323,10 +326,14 @@ static int joystick_is_held(unsigned key) { return (joystick_held & key) != 0; }
 static double message_len = 2.2;
 static int message_record;
 
-static void show_message(const char *text, int return_menu) {
+static void set_state(State s) {
+    pthread_mutex_lock(&app.lock); app.state = s; pthread_mutex_unlock(&app.lock);
+}
+
+static void show_message(const char *text, State back) {
     pthread_mutex_lock(&app.lock);
     snprintf(app.message, sizeof app.message, "%s", text);
-    app.message_to_menu = return_menu;
+    app.message_back = back;
     app.state = MESSAGE;
     pthread_mutex_unlock(&app.lock);
     message_at = GetTime(); message_len = 2.2; message_record = 0;
@@ -387,8 +394,8 @@ static void start_asteroids(void) {
 }
 
 static void start_game(State game, const char *card, int credits) {
-    if (credits < COST) { show_message("Creditos insuficientes", 1); buzzer_play(3); return; }
-    if (csv_write(card, credits-COST) < 0) { show_message("Erro ao salvar cartao", 1); buzzer_play(3); return; }
+    if (credits < COST) { show_message("Creditos insuficientes", MENU); buzzer_play(3); return; }
+    if (csv_write(card, credits-COST) < 0) { show_message("Erro ao salvar cartao", MENU); buzzer_play(3); return; }
     pthread_mutex_lock(&app.lock); app.credits = credits-COST; app.state = game; pthread_mutex_unlock(&app.lock);
     strcpy(active_card, card);
     if (game == SNAKE) start_snake(); else start_asteroids();
@@ -396,16 +403,56 @@ static void start_game(State game, const char *card, int credits) {
 }
 
 static void recharge(const char *card, int credits, int value) {
-    if (csv_write(card, credits + value) < 0) { show_message("Erro ao salvar recarga", 1); buzzer_play(3); return; }
+    if (csv_write(card, credits + value) < 0) { show_message("Erro ao salvar recarga", OPTIONS); buzzer_play(3); return; }
     pthread_mutex_lock(&app.lock); app.credits = credits + value; pthread_mutex_unlock(&app.lock);
-    show_message(TextFormat("Recarga de +%d credito(s)", value), 1); buzzer_play(2);
+    show_message(TextFormat("Recarga de +%d credito(s)", value), OPTIONS); buzzer_play(2);
 }
 
 static void game_over(const char *game, int score, const Note *over) {
     int record = score_record(active_card, game, score);
-    show_message(TextFormat("%s: %d pontos", game, score), 1);
+    show_message(TextFormat("%s: %d pontos", game, score), MENU);
     if (record) { message_record = 1; message_len = 5.0; }
     melody_play2(over, record ? NEW_RECORD : NULL);
+}
+
+static void text_center(const char *t, int y, int size, Color c) { DrawText(t, CX - MeasureText(t, size)/2, y, size, c); }
+
+static void draw_wallet(const char *code, int credits, int y) {
+    text_center(TextFormat("Codigo %s  |  Creditos: %d  |  1 credito por partida", code, credits), y, 18, GOLD);
+}
+
+static void draw_button(const char *label, int y, int on) {
+    int w = MeasureText(label, 20) + 44;
+    DrawRectangleRounded((Rectangle){CX - w/2, y, w, 42}, .3f, 8, on ? (Color){70,110,220,255} : (Color){35,45,85,255});
+    text_center(label, y + 11, 20, WHITE);
+}
+
+static void draw_arrow(int cx, int cy, int dir) {
+    DrawRing((Vector2){cx, cy}, 23, 28, 0, 360, 48, RAYWHITE);
+    Vector2 tip = {cx + 11*dir, cy};
+    DrawLineEx((Vector2){cx - 11*dir, cy}, tip, 4, RAYWHITE);
+    DrawLineEx(tip, (Vector2){cx + 2*dir, cy - 9}, 4, RAYWHITE);
+    DrawLineEx(tip, (Vector2){cx + 2*dir, cy + 9}, 4, RAYWHITE);
+}
+
+/* "Foto" estatica de cada jogo com as cores originais (primitivas, sem arquivos de imagem). */
+static void draw_preview(int game, Rectangle r) {
+    DrawRectangle(r.x-3, r.y-3, r.width+6, r.height+6, (Color){65,80,125,255});
+    if (game == 0) {
+        const int c = 18, ox = r.x + 3, oy = r.y + 2;
+        static const Cell body[] = {{14,5},{15,5},{15,6},{15,7},{15,8},{15,9},{16,9},{17,9},{18,9},{19,9},{19,8},{19,7}};
+        DrawRectangleRec(r, (Color){10,31,24,255});
+        for (int i = 0; i < 12; i++) DrawRectangle(ox + body[i].x*c + 2, oy + body[i].y*c + 2, c-4, c-4, i ? (Color){50,180,100,255} : LIME);
+        DrawCircle(ox + 12*c + c/2, oy + 4*c + c/2, 6, RED);
+    } else {
+        static const int rk[][3] = {{126,98,23},{36,139,11},{205,139,11},{259,161,23},{179,197,11},{36,219,6},{222,207,6},{277,207,6},{345,208,11},{384,219,6}};
+        DrawRectangleRec(r, (Color){12,14,29,255});
+        for (int y = 10; y < r.height; y += 29) DrawCircle(r.x + (y*17)%(int)r.width, r.y + y, 1.5f, (Color){185,185,255,170});
+        for (int i = 0; i < 10; i++) DrawCircle(r.x + rk[i][0], r.y + rk[i][1], rk[i][2], GRAY);
+        DrawText("Pontos: 600", r.x + 10, r.y + 10, 14, YELLOW);
+        int sx = r.x + 256;
+        DrawTriangle((Vector2){sx, r.y + 232}, (Vector2){sx - 9, r.y + 254}, (Vector2){sx + 9, r.y + 254}, SKYBLUE);
+    }
 }
 
 static void draw_header(const char *title, int score) {
@@ -549,12 +596,12 @@ int main(void) {
     initDisplay();
     while (!WindowShouldClose()) {
         controls_poll();
-        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; char note[96]; strcpy(note,app.message); int back=app.message_to_menu; pthread_mutex_unlock(&app.lock);
+        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; char note[96]; strcpy(note,app.message); State back=app.message_back; pthread_mutex_unlock(&app.lock);
         switch(state){
             case WAIT_CARD:
                 break;
             case MESSAGE:
-                if (GetTime()-message_at>message_len) { pthread_mutex_lock(&app.lock); app.state=back?MENU:WAIT_CARD; pthread_mutex_unlock(&app.lock); } break;
+                if (GetTime()-message_at>message_len) { set_state(back); } break;
             case CARD_CODE:
                 if (button_was_pressed(UP))
                     code_letters[code_index] = code_letters[code_index] == 70 ? 65 : code_letters[code_index] + 1;
@@ -577,34 +624,36 @@ int main(void) {
                     }
                 }
                 break;
-            case MENU:
-                if (was_pressed(UP) && selected > 0) selected--;
-                if (was_pressed(DOWN) && selected < 5) selected++;
-                if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); }
+            case MENU: /* carrossel: esq/dir troca jogo, cima joga, baixo abre opcoes */
+                if (was_pressed(LEFT)) selected = (selected + GAME_COUNT - 1) % GAME_COUNT;
+                if (was_pressed(RIGHT)) selected = (selected + 1) % GAME_COUNT;
+                if (was_pressed(UP)) start_game(selected ? ASTEROIDS : SNAKE, card, credits);
+                else if (was_pressed(DOWN)) { option_selected = 0; set_state(OPTIONS); }
+                break;
+            case OPTIONS: /* cima/baixo escolhe, direita confirma, esquerda volta aos jogos */
+                if (was_pressed(UP) && option_selected > 0) option_selected--;
+                if (was_pressed(DOWN) && option_selected < 3) option_selected++;
+                if (was_pressed(LEFT)) set_state(MENU);
                 if (was_pressed(RIGHT)) {
-                    switch (selected){
-                        case 0: start_game(SNAKE,card,credits); break;
-                        case 1: start_game(ASTEROIDS,card,credits); break;
-                        case 2: recharge_selected=0; pthread_mutex_lock(&app.lock); app.state=RECHARGE; pthread_mutex_unlock(&app.lock); break;
-                        case 3: show_message(TextFormat("Saldo: %d credito(s)",credits),1); break;
-                        case 4: pthread_mutex_lock(&app.lock); app.state=SCORES; pthread_mutex_unlock(&app.lock); break;
-                        default: pthread_mutex_lock(&app.lock); app.state=WAIT_CARD; pthread_mutex_unlock(&app.lock); break;
+                    switch (option_selected) {
+                        case 0: recharge_selected = 0; set_state(RECHARGE); break;
+                        case 1: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
+                        case 2: set_state(SCORES); break;
+                        default: set_state(WAIT_CARD); break;
                     }
                 }
                 break;
             case SCORES:
-                if (was_pressed(LEFT) || was_pressed(RIGHT)) {
-                    pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock);
-                }
+                if (was_pressed(LEFT) || was_pressed(RIGHT)) set_state(OPTIONS);
                 break;
             case RECHARGE:
                 if (was_pressed(UP) && recharge_selected > 0) recharge_selected--;
                 if (was_pressed(DOWN) && recharge_selected < 3) recharge_selected++;
-                if (was_pressed(LEFT)) { pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock); }
+                if (was_pressed(LEFT)) set_state(OPTIONS);
                 if (was_pressed(RIGHT)) {
                     const int packs[] = {1, 5, 10};
                     if (recharge_selected < 3) recharge(card,credits,packs[recharge_selected]);
-                    else { pthread_mutex_lock(&app.lock); app.state=MENU; pthread_mutex_unlock(&app.lock); }
+                    else set_state(OPTIONS);
                 }
                 break;
             default: break;
@@ -633,10 +682,18 @@ int main(void) {
             DrawText("Azul sobe  |  Vermelho desce  |  Verde confirma", CX-250, 285, 18, LIGHTGRAY);
             if (code_error[0]) DrawText(code_error, CX-MeasureText(code_error,18)/2, 330, 18, RED);
         } else if (state==MENU) {
-            DrawText("ARCADE RFID",CX-105,18,28,RAYWHITE); DrawText(TextFormat("Codigo %s   |   Creditos: %d",public_code,credits),CX-150,58,20,GOLD);
-            const char *items[] = {"COBRINHA  -  1 credito","ASTEROIDES  -  1 credito","RECARREGAR CREDITOS","CONSULTAR SALDO","PLACAR","ENCERRAR CARTAO"};
-            for (int i=0;i<6;i++) { Color c=i==selected?(Color){70,110,220,255}:(Color){35,45,85,255}; DrawRectangleRounded((Rectangle){180,82+i*50,440,39},.2f,8,c); DrawText(items[i],230,91+i*50,18,WHITE); if(i==selected)DrawText(">",195,91+i*50,20,YELLOW); }
-            DrawText("Joystick: cima/baixo seleciona | direita confirma | esquerda volta",65,425,16,LIGHTGRAY);
+            text_center(GAME_NAMES[selected], 16, 44, RAYWHITE);
+            draw_wallet(public_code, credits, 402);
+            draw_preview(selected, (Rectangle){172, 78, 456, 256});
+            draw_arrow(92, 206, -1); draw_arrow(708, 206, 1);
+            draw_button("OPCOES", 350, 0);
+            text_center("Esquerda/direita: trocar jogo | Cima: jogar | Baixo: opcoes", 440, 16, LIGHTGRAY);
+        } else if (state==OPTIONS) {
+            const char *items[] = {"RECARREGAR SALDO", "CONSULTAR SALDO", "PLACAR", "ENCERRAR CARTAO"};
+            text_center("OPCOES", 16, 44, RAYWHITE);
+            draw_wallet(public_code, credits, 370);
+            for (int i = 0; i < 4; i++) draw_button(items[i], 100 + i*62, i == option_selected);
+            text_center("Cima/baixo: escolher | Direita: confirmar | Esquerda: voltar aos jogos", 440, 16, LIGHTGRAY);
         } else if (state==RECHARGE) {
             const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
             DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);

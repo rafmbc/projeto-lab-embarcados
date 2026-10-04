@@ -49,10 +49,12 @@ O joystick físico não é o mesmo conjunto de quatro botões: os eixos X/Y pass
 i2cdetect -y 1
 ```
 
-O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa, os eixos foram invertidos para corresponder aos movimentos físicos; o clique equivale a confirmar (`direita`) no menu. Botões físicos têm prioridade sobre o joystick. Se `48` não aparecer, confira a chave/cabeamento do módulo ADC da Projects Board; os botões continuam disponíveis como alternativa.
+O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa, os eixos foram invertidos para corresponder aos movimentos físicos; o clique equivale a `direita` (confirma nas Opcoes; no carrossel, troca de jogo). Botões físicos têm prioridade sobre o joystick. Se `48` não aparecer, confira a chave/cabeamento do módulo ADC da Projects Board; os botões continuam disponíveis como alternativa.
 
 ## Controles e placar
 
+- **Tela de jogos (carrossel):** esquerda/direita troca o jogo mostrado (titulo + foto), cima entra no jogo (1 credito), baixo abre **Opcoes**. Codigo e creditos aparecem abaixo do botao.
+- **Opcoes:** cima/baixo escolhe (Recarregar Saldo, Consultar Saldo, Placar, Encerrar Cartao), direita confirma, esquerda volta aos jogos. Recarga e Placar voltam para Opcoes.
 - **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
 - **PLACAR:** mostra Cobrinha e Asteroides em duas colunas independentes na mesma tela. Registra a melhor pontuação de cada cartão por jogo no arquivo `placar.csv`, criado automaticamente ao terminar a primeira partida.
