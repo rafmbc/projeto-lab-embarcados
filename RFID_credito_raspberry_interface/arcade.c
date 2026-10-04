@@ -223,8 +223,34 @@ static int score_load(ScoreEntry *entries, int limit, const char *game) {
     return count;
 }
 
+/* Melodias 8-bit: {frequencia Hz, duracao ms}, terminadas em {0,0}. Exige buzzer PASSIVO (softTone). */
+typedef struct { int f, ms; } Note;
+static const Note SNAKE_START[]    = {{523,90},{659,90},{784,90},{1047,200},{0,0}};
+static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{196,400},{0,0}};
+static const Note ASTEROID_START[] = {{262,80},{392,80},{523,80},{392,80},{523,80},{784,220},{0,0}};
+static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,450},{0,0}};
+static volatile int melody_on;
+#ifndef RFID_DUMMY
+static void *melody_thread(void *arg) {
+    for (const Note *n = arg; n->ms; n++) {
+        softToneWrite(PIN_BUZZER, n->f); usleep(n->ms*1000);
+        softToneWrite(PIN_BUZZER, 0); usleep(15000);
+    }
+    melody_on = 0; return NULL;
+}
+#endif
+static void melody_play(const Note *notes) {
+#ifndef RFID_DUMMY
+    if (melody_on) return;
+    melody_on = 1; pthread_t t; pthread_create(&t, NULL, melody_thread, (void *)notes); pthread_detach(t);
+#else
+    (void)notes;
+#endif
+}
+
 static void buzzer_play(int pulses) {
 #ifndef RFID_DUMMY
+    if (melody_on) return;
     buzz_edges = pulses * 2;
     buzz_at = GetTime();
 #else
@@ -237,7 +263,7 @@ static void controls_init(void) {
     if (wiringPiSetupGpio() == -1) { fputs("Erro ao iniciar GPIO.\n", stderr); return; }
     const int pins[] = { PIN_UP, PIN_LEFT, PIN_RIGHT, PIN_DOWN, PIN_JOYSTICK_Z };
     for (int i = 0; i < 5; i++) { pinMode(pins[i], INPUT); pullUpDnControl(pins[i], PUD_UP); }
-    pinMode(PIN_BUZZER, OUTPUT); softToneWrite(PIN_BUZZER,4000);
+    pinMode(PIN_BUZZER, OUTPUT); softToneCreate(PIN_BUZZER); softToneWrite(PIN_BUZZER,0);
     delayMicroseconds(5);
     adc_fd = open("/dev/i2c-1", O_RDWR);
     if (adc_fd >= 0 && ioctl(adc_fd, I2C_SLAVE, ADC_I2C_ADDRESS) < 0) { close(adc_fd); adc_fd = -1; }
@@ -308,7 +334,7 @@ static void controls_poll(void) {
     if (buzz_edges > 0 && GetTime() >= buzz_at) {
         digitalWrite(PIN_BUZZER, (buzz_edges & 1) == 0 ? HIGH : LOW);
         buzz_edges--; buzz_at = GetTime() + 0.07;
-    } else if (!buzz_edges) digitalWrite(PIN_BUZZER, LOW);
+    } else if (!buzz_edges && !melody_on) digitalWrite(PIN_BUZZER, LOW);
 #endif
 }
 
@@ -386,7 +412,7 @@ static void start_game(State game, const char *card, int credits) {
     pthread_mutex_lock(&app.lock); app.credits = credits-COST; app.state = game; pthread_mutex_unlock(&app.lock);
     strcpy(active_card, card);
     if (game == SNAKE) start_snake(); else start_asteroids();
-    buzzer_play(2);
+    melody_play(game == SNAKE ? SNAKE_START : ASTEROID_START);
 }
 
 static void recharge(const char *card, int credits, int value) {
@@ -410,7 +436,7 @@ static void draw_snake(void) {
         Cell next = {snake[0].x+next_dx, snake[0].y+next_dy};
         int hit = next.x<0 || next.x>=COLS || next.y<0 || next.y>=ROWS;
         for (int i=0;i<snake_len;i++) if (snake[i].x==next.x && snake[i].y==next.y) hit=1;
-        if (hit) { score_record(active_card, "Cobrinha", snake_score); show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); buzzer_play(3); return; }
+        if (hit) { score_record(active_card, "Cobrinha", snake_score); show_message(TextFormat("Cobrinha: %d pontos", snake_score), 1); melody_play(SNAKE_OVER); return; }
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
@@ -444,7 +470,7 @@ static void draw_asteroids(void) {
         rocks[i].y+=rocks[i].speed*dt;
         if (rocks[i].y>H+rocks[i].radius) init_rock(i);
         float x=rocks[i].x-player.position.x, y=rocks[i].y-(H-55), r=rocks[i].radius+18;
-        if (x*x+y*y<r*r) { score_record(active_card, "Asteroides", asteroid_score); show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); buzzer_play(3); return; }
+        if (x*x+y*y<r*r) { score_record(active_card, "Asteroides", asteroid_score); show_message(TextFormat("Asteroides: %d pontos", asteroid_score), 1); melody_play(ASTEROID_OVER); return; }
     }
     
     // Player shoot logic
