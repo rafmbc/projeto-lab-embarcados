@@ -1,6 +1,6 @@
 # Arcade RFID
 
-O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há dois jogos Raylib: Cobrinha e Asteroides. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está isolado em `arcade.c`.
+O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há três jogos Raylib: Cobrinha, Asteroides e Ritmo. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está isolado em `arcade.c`.
 
 No menu **RECARREGAR CREDITOS**, qualquer cartão pode receber +1, +5 ou +10 créditos. É uma recarga livre para a demonstração; não há cobrança/pagamento integrado.
 
@@ -57,7 +57,8 @@ O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa
 - **Opcoes:** cima/baixo escolhe (Recarregar Saldo, Consultar Saldo, Placar, Encerrar Cartao), direita confirma, esquerda volta aos jogos. Recarga e Placar voltam para Opcoes.
 - **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
-- **PLACAR:** mostra Cobrinha e Asteroides em duas colunas independentes na mesma tela. Registra a melhor pontuação de cada cartão por jogo no arquivo `placar.csv`, criado automaticamente ao terminar a primeira partida.
+- **Ritmo (estilo Piano Tiles):** blocos descem em 4 faixas com as cores dos botões (esquerda amarelo, cima azul, baixo vermelho, direita verde). Aperte o botão da faixa quando o bloco cruza a linha; cada acerto toca a próxima nota de *Für Elise* no buzzer, com o mesmo volume (`BUZZ_DUTY`) dos outros jogos. Errar o botão ou deixar o bloco passar custa 1 de 3 vidas; a música repete 15% mais rápida a cada volta.
+- **PLACAR:** mostra Cobrinha, Asteroides e Ritmo em três colunas na mesma tela. A melhor pontuação de cada cartão por jogo fica em `cartoes.csv` (colunas `Pont_*`).
 
 ## Código público do cartão
 

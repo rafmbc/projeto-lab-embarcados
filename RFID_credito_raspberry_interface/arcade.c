@@ -21,7 +21,7 @@
 #define H 480
 #define CX (W/2)
 #define CSV_FILE "cartoes.csv"
-#define CSV_HEADER "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides\n"
+#define CSV_HEADER "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo\n"
 #define CSV_LINE_MAX 64
 #define PIN_UP 20
 #define PIN_LEFT 26
@@ -36,10 +36,12 @@
 #define JOYSTICK_HIGH 175
 #define COST 1
 
-#define GAME_COUNT 2
+#define GAME_COUNT 3
+/* Cores dos botoes da placa, usadas no Ritmo: esquerda amarelo, cima azul, baixo vermelho, direita verde. */
+static const Color LANE_COLORS[4] = {{253,249,0,255}, {0,121,241,255}, {230,41,55,255}, {0,228,48,255}};
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, SCORES, SNAKE, ASTEROIDS, MESSAGE } State;
+typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, SCORES, SNAKE, ASTEROIDS, RHYTHM, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { float x, y, speed, radius; } Rock;
 typedef struct Shoot {
@@ -77,7 +79,7 @@ static int adc_fd = -1;
 static int buzz_edges;
 static double buzz_at, message_at;
 static int selected, option_selected, recharge_selected;
-static const char *GAME_NAMES[GAME_COUNT] = {"COBRINHA", "ASTEROIDES"};
+static const char *GAME_NAMES[GAME_COUNT] = {"COBRINHA", "ASTEROIDES", "RITMO"};
 static char active_card[9];
 static char code_letters[4] = "AAA";
 static int code_index;
@@ -112,7 +114,7 @@ static void card_string(const uint8_t *id, char *out) {
 }
 
 /* ponytail: uma linha por cartao. Teto: 128 cartoes. Upgrade path: SQLite. */
-typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; } Row;
+typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; int rhythm; } Row;
 
 static int csv_load(Row *rows, int limit) {
     FILE *f = fopen(CSV_FILE, "r"); if (!f) return 0;
@@ -120,7 +122,7 @@ static int csv_load(Row *rows, int limit) {
     fgets(line, sizeof line, f);
     while (n < limit && fgets(line, sizeof line, f)) {
         Row r = {0};
-        sscanf(line, "%8[^,],%d,%3[^,],%d,%d", r.card, &r.credits, r.code, &r.snake, &r.asteroid);
+        sscanf(line, "%8[^,],%d,%3[^,],%d,%d,%d", r.card, &r.credits, r.code, &r.snake, &r.asteroid, &r.rhythm);
         if (r.card[0]) rows[n++] = r;
     }
     fclose(f); return n;
@@ -130,7 +132,7 @@ static void csv_save(Row *rows, int n) {
     FILE *f = fopen(CSV_FILE, "w"); if (!f) return;
     fputs(CSV_HEADER, f);
     for (int i = 0; i < n; i++)
-        fprintf(f, "%s,%d,%s,%d,%d\n", rows[i].card, rows[i].credits, rows[i].code, rows[i].snake, rows[i].asteroid);
+        fprintf(f, "%s,%d,%s,%d,%d,%d\n", rows[i].card, rows[i].credits, rows[i].code, rows[i].snake, rows[i].asteroid, rows[i].rhythm);
     fclose(f);
 }
 
@@ -192,14 +194,14 @@ static int score_record(const char *card, const char *game, int score) {
     if (!r) { if (n >= 128) return 0; strncpy(rows[n].card, card, 8); rows[n].credits = csv_read(card); r = &rows[n++]; }
     if (!strcmp(game, "Cobrinha")  && score > r->snake)    { r->snake    = score; record = 1; }
     if (!strcmp(game, "Asteroides") && score > r->asteroid) { r->asteroid = score; record = 1; }
+    if (!strcmp(game, "Ritmo")      && score > r->rhythm)   { r->rhythm   = score; record = 1; }
     csv_save(rows, n); return record;
 }
 
 static int score_load(ScoreEntry *entries, int limit, const char *game) {
     Row rows[128]; int n = csv_load(rows, 128), count = 0;
-    int is_snake = !strcmp(game, "Cobrinha");
     for (int i = 0; i < n && count < limit; i++) {
-        int s = is_snake ? rows[i].snake : rows[i].asteroid;
+        int s = !strcmp(game, "Cobrinha") ? rows[i].snake : !strcmp(game, "Asteroides") ? rows[i].asteroid : rows[i].rhythm;
         if (!s) continue;
         strncpy(entries[count].card, rows[i].card, 8);
         strncpy(entries[count].game, game, 15);
@@ -219,6 +221,7 @@ static const Note SNAKE_START[]    = {{523,90},{659,90},{784,90},{1047,200},{0,0
 static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{196,200},{0,0}};
 static const Note ASTEROID_START[] = {{262,80},{392,80},{523,80},{392,80},{523,80},{784,220},{0,0}};
 static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,200},{0,0}};
+static const Note RHYTHM_START[]   = {{659,90},{622,90},{659,90},{622,90},{659,200},{0,0}};
 static const Note NEW_RECORD[]     = {{523,100},{659,100},{784,100},{1047,100},{784,100},{1047,100},{1319,300},{0,0}};
 static volatile int melody_on;
 static const Note *melody_queue[2];
@@ -244,6 +247,7 @@ static void *melody_thread(void *arg) {
 
 static void melody_play2(const Note *n1, const Note *n2) {
     if (melody_on) return;
+    buzz_edges = 0; /* melodia tem prioridade sobre o clique de tecla */
     melody_on = 1; melody_queue[0] = n1; melody_queue[1] = n2;
     pthread_t t; pthread_create(&t, NULL, melody_thread, NULL); pthread_detach(t);
 }
@@ -393,13 +397,51 @@ static void start_asteroids(void) {
 
 }
 
+/* Ritmo (estilo Piano Tiles): os blocos descem nas 4 faixas; aperte o botao da cor
+ * da faixa quando o bloco cruza a linha. Cada acerto toca a proxima nota no buzzer. */
+#define S16 300 /* semicolcheia, em ms de musica */
+static const Note FUR_ELISE[] = {
+    {659,S16},{622,S16},{659,S16},{622,S16},{659,S16},{494,S16},{587,S16},{523,S16},{440,3*S16},
+    {262,S16},{330,S16},{440,S16},{494,3*S16},
+    {330,S16},{415,S16},{494,S16},{523,3*S16},
+    {330,S16},{659,S16},{622,S16},{659,S16},{622,S16},{659,S16},{494,S16},{587,S16},{523,S16},{440,3*S16},
+    {262,S16},{330,S16},{440,S16},{494,3*S16},
+    {330,S16},{523,S16},{494,S16},{440,5*S16},
+};
+#define SONG_N (int)(sizeof FUR_ELISE / sizeof FUR_ELISE[0])
+/* Faixas da esquerda p/ direita = botoes da placa: esquerda amarelo, cima azul, baixo vermelho, direita verde. */
+static const unsigned LANE_KEYS[4] = {LEFT, UP, DOWN, RIGHT};
+#define RH_LANE_W 110
+#define RH_X ((W - 4*RH_LANE_W)/2)
+#define RH_TOP 95
+#define RH_HIT_Y 400
+#define RH_TILE_H 56
+#define RH_PX 0.25f   /* pixels por ms de musica */
+#define RH_WINDOW 200 /* tolerancia do acerto, ms de musica */
+#define RH_LIVES 3
+static int song_at[SONG_N], song_len, rhythm_next, rhythm_lives, rhythm_score;
+static double rhythm_clock;
+static Note rhythm_note[2]; /* nota atual + terminador {0,0} */
+
+/* Grave na esquerda, agudo na direita. */
+static int rhythm_lane(int f) { return f < 400 ? 0 : f < 500 ? 1 : f < 630 ? 2 : 3; }
+/* A musica repete sem fim; a cada volta fica 15% mais rapida. */
+static float rhythm_speed(void) { return 1 + 0.15f * (rhythm_next / SONG_N); }
+static int rhythm_time(int k) { return k / SONG_N * song_len + song_at[k % SONG_N]; }
+
+static void start_rhythm(void) {
+    song_len = 0;
+    for (int i = 0; i < SONG_N; i++) { song_at[i] = song_len; song_len += FUR_ELISE[i].ms; }
+    rhythm_clock = -2000; rhythm_next = 0; rhythm_lives = RH_LIVES; rhythm_score = 0;
+}
+
 static void start_game(State game, const char *card, int credits) {
     if (credits < COST) { show_message("Creditos insuficientes", MENU); buzzer_play(3); return; }
     if (csv_write(card, credits-COST) < 0) { show_message("Erro ao salvar cartao", MENU); buzzer_play(3); return; }
     pthread_mutex_lock(&app.lock); app.credits = credits-COST; app.state = game; pthread_mutex_unlock(&app.lock);
     strcpy(active_card, card);
-    if (game == SNAKE) start_snake(); else start_asteroids();
-    melody_play(game == SNAKE ? SNAKE_START : ASTEROID_START);
+    if (game == SNAKE) start_snake(); else if (game == ASTEROIDS) start_asteroids(); else start_rhythm();
+    melody_play(game == SNAKE ? SNAKE_START : game == ASTEROIDS ? ASTEROID_START : RHYTHM_START);
 }
 
 static void recharge(const char *card, int credits, int value) {
@@ -444,7 +486,7 @@ static void draw_preview(int game, Rectangle r) {
         DrawRectangleRec(r, (Color){10,31,24,255});
         for (int i = 0; i < 12; i++) DrawRectangle(ox + body[i].x*c + 2, oy + body[i].y*c + 2, c-4, c-4, i ? (Color){50,180,100,255} : LIME);
         DrawCircle(ox + 12*c + c/2, oy + 4*c + c/2, 6, RED);
-    } else {
+    } else if (game == 1) {
         static const int rk[][3] = {{126,98,23},{36,139,11},{205,139,11},{259,161,23},{179,197,11},{36,219,6},{222,207,6},{277,207,6},{345,208,11},{384,219,6}};
         DrawRectangleRec(r, (Color){12,14,29,255});
         for (int y = 10; y < r.height; y += 29) DrawCircle(r.x + (y*17)%(int)r.width, r.y + y, 1.5f, (Color){185,185,255,170});
@@ -452,6 +494,13 @@ static void draw_preview(int game, Rectangle r) {
         DrawText("Pontos: 600", r.x + 10, r.y + 10, 14, YELLOW);
         int sx = r.x + 256;
         DrawTriangle((Vector2){sx, r.y + 232}, (Vector2){sx - 9, r.y + 254}, (Vector2){sx + 9, r.y + 254}, SKYBLUE);
+    } else {
+        static const int tl[][2] = {{3,10},{2,60},{3,110},{1,150},{0,190}}; /* faixa, y */
+        int lw = r.width/4;
+        for (int l = 0; l < 4; l++) DrawRectangle(r.x + l*lw, r.y, lw, r.height, l % 2 ? (Color){20,24,48,255} : (Color){16,19,40,255});
+        for (int i = 0; i < 5; i++) DrawRectangleRounded((Rectangle){r.x + tl[i][0]*lw + 6, r.y + tl[i][1], lw - 12, 34}, .25f, 8, LANE_COLORS[tl[i][0]]);
+        DrawLine(r.x, r.y + 214, r.x + r.width, r.y + 214, RAYWHITE);
+        for (int l = 0; l < 4; l++) DrawRectangleRounded((Rectangle){r.x + l*lw + 10, r.y + 222, lw - 20, 26}, .4f, 8, LANE_COLORS[l]);
     }
 }
 
@@ -588,6 +637,40 @@ static void draw_asteroids(void) {
     DrawTriangle((Vector2){player.position.x,H-90},(Vector2){player.position.x-20,H-35},(Vector2){player.position.x+20,H-35},SKYBLUE);
 }
 
+static void draw_rhythm(void) {
+    rhythm_clock += GetFrameTime() * 1000 * rhythm_speed();
+    const Note *n = &FUR_ELISE[rhythm_next % SONG_N];
+    double off = rhythm_clock - rhythm_time(rhythm_next);
+    for (int l = 0; l < 4; l++) {
+        if (!button_was_pressed(LANE_KEYS[l])) continue;
+        if (l != rhythm_lane(n->f) || fabs(off) > RH_WINDOW) { rhythm_lives--; continue; }
+        if (!melody_on) { /* som dura ate perto da proxima nota, teto 400 ms */
+            int gap = (int)(n->ms / rhythm_speed()) - 110;
+            rhythm_note[0] = (Note){n->f, gap < 40 ? 40 : gap > 400 ? 400 : gap};
+            melody_play(rhythm_note);
+        }
+        rhythm_score += 10; rhythm_next++; off = 0; break;
+    }
+    if (off > RH_WINDOW) { rhythm_lives--; rhythm_next++; } /* bloco passou da linha */
+    if (rhythm_lives <= 0) { game_over("Ritmo", rhythm_score, SNAKE_OVER); return; }
+
+    for (int l = 0; l < 4; l++) DrawRectangle(RH_X + l*RH_LANE_W, RH_TOP, RH_LANE_W, H - RH_TOP, l % 2 ? (Color){20,24,48,255} : (Color){16,19,40,255});
+    DrawRectangle(RH_X, RH_HIT_Y - RH_TILE_H/2, 4*RH_LANE_W, RH_TILE_H, Fade(WHITE, .06f));
+    BeginScissorMode(0, RH_TOP, W, H - RH_TOP);
+    for (int k = rhythm_next; ; k++) {
+        float y = RH_HIT_Y - (rhythm_time(k) - rhythm_clock) * RH_PX;
+        if (y < RH_TOP - RH_TILE_H) break;
+        int l = rhythm_lane(FUR_ELISE[k % SONG_N].f);
+        DrawRectangleRounded((Rectangle){RH_X + l*RH_LANE_W + 6, y - RH_TILE_H/2, RH_LANE_W - 12, RH_TILE_H}, .25f, 8, LANE_COLORS[l]);
+    }
+    EndScissorMode();
+    DrawLine(RH_X, RH_HIT_Y, RH_X + 4*RH_LANE_W, RH_HIT_Y, RAYWHITE);
+    for (int l = 0; l < 4; l++)
+        DrawRectangleRounded((Rectangle){RH_X + l*RH_LANE_W + 10, 434, RH_LANE_W - 20, 34}, .4f, 8, is_held(LANE_KEYS[l]) ? LANE_COLORS[l] : Fade(LANE_COLORS[l], .35f));
+    draw_header("RITMO", rhythm_score);
+    text_center(TextFormat("Fur Elise - Beethoven   |   Vidas: %d", rhythm_lives), 68, 18, LIGHTGRAY);
+}
+
 int main(void) {
     if (MFRC522_Init('B') != 0) fputs("Erro ao iniciar RFID MFRC522.\n", stderr);
     pthread_mutex_init(&app.lock, NULL); app.state = WAIT_CARD;
@@ -627,7 +710,7 @@ int main(void) {
             case MENU: /* carrossel: esq/dir troca jogo, cima joga, baixo abre opcoes */
                 if (was_pressed(LEFT)) selected = (selected + GAME_COUNT - 1) % GAME_COUNT;
                 if (was_pressed(RIGHT)) selected = (selected + 1) % GAME_COUNT;
-                if (was_pressed(UP)) start_game(selected ? ASTEROIDS : SNAKE, card, credits);
+                if (was_pressed(UP)) { const State games[GAME_COUNT] = {SNAKE, ASTEROIDS, RHYTHM}; start_game(games[selected], card, credits); }
                 else if (was_pressed(DOWN)) { option_selected = 0; set_state(OPTIONS); }
                 break;
             case OPTIONS: /* cima/baixo escolhe, direita confirma, esquerda volta aos jogos */
@@ -660,6 +743,7 @@ int main(void) {
         }
         if (state==SNAKE) display_number(snake_score);
         else if (state==ASTEROIDS) display_number(asteroid_score);
+        else if (state==RHYTHM) display_number(rhythm_score);
         else if (state==CARD_CODE) { char t[4]; for (int i=0;i<3;i++) t[i]=i<=code_index?code_letters[i]:'_'; t[3]=0; display_text(t); }
         else if (state==WAIT_CARD) display_text("");
         else display_text(public_code);
@@ -702,31 +786,26 @@ int main(void) {
             DrawText("Selecione o pacote desejado",CX-120,395,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
         } else if (state==SCORES) {
-            ScoreEntry snake_scores[10], asteroid_scores[10];
-            int snake_count = score_load(snake_scores, 10, "Cobrinha");
-            int asteroid_count = score_load(asteroid_scores, 10, "Asteroides");
+            static const char *score_games[GAME_COUNT] = {"Cobrinha", "Asteroides", "Ritmo"};
+            const Color score_colors[GAME_COUNT] = {LIME, SKYBLUE, VIOLET};
             DrawText("PLACAR", CX-58, 24, 32, GOLD);
-            DrawText("COBRINHA", 145, 75, 24, LIME);
-            DrawText("ASTEROIDES", 475, 75, 24, SKYBLUE);
-            DrawLine(CX, 68, CX, 390, (Color){80,90,145,255});
-            if (snake_count == 0) DrawText("Sem scores", 145, 115, 18, LIGHTGRAY);
-            if (asteroid_count == 0) DrawText("Sem scores", 475, 115, 18, LIGHTGRAY);
-            for (int i = 0; i < snake_count; i++) {
-                DrawText(TextFormat("%d.", i+1), 95, 112+i*27, 18, YELLOW);
-                char display_code[4] = "---"; card_code_read(snake_scores[i].card, display_code);
-                DrawText(display_code, 135, 112+i*27, 18, RAYWHITE);
-                DrawText(TextFormat("%d", snake_scores[i].score), 300, 112+i*27, 18, GREEN);
-            }
-            for (int i = 0; i < asteroid_count; i++) {
-                DrawText(TextFormat("%d.", i+1), 430, 112+i*27, 18, YELLOW);
-                char display_code[4] = "---"; card_code_read(asteroid_scores[i].card, display_code);
-                DrawText(display_code, 470, 112+i*27, 18, RAYWHITE);
-                DrawText(TextFormat("%d", asteroid_scores[i].score), 635, 112+i*27, 18, GREEN);
+            for (int g = 0; g < GAME_COUNT; g++) {
+                ScoreEntry e[10]; int n = score_load(e, 10, score_games[g]); int x = 40 + g*260;
+                DrawText(GAME_NAMES[g], x + 20, 75, 22, score_colors[g]);
+                if (g) DrawLine(x - 20, 68, x - 20, 390, (Color){80,90,145,255});
+                if (n == 0) DrawText("Sem scores", x + 20, 115, 18, LIGHTGRAY);
+                for (int i = 0; i < n; i++) {
+                    char display_code[4] = "---"; card_code_read(e[i].card, display_code);
+                    DrawText(TextFormat("%d.", i+1), x, 112+i*27, 18, YELLOW);
+                    DrawText(display_code, x + 40, 112+i*27, 18, RAYWHITE);
+                    DrawText(TextFormat("%d", e[i].score), x + 150, 112+i*27, 18, GREEN);
+                }
             }
             DrawText("Esquerda ou direita para voltar", CX-135, 430, 17, LIGHTGRAY);
         } else {
             if (state==SNAKE) draw_snake();
             else if (state==ASTEROIDS) draw_asteroids();
+            else if (state==RHYTHM) draw_rhythm();
             else if (message_record) {
                 DrawRectangleRounded((Rectangle){110,140,580,200},.15f,8,(Color){60,45,10,255}); DrawRectangleRoundedLines((Rectangle){110,140,580,200},.15f,8,GOLD);
                 DrawText("NOVO RECORDE!",CX-MeasureText("NOVO RECORDE!",42)/2,170,42,GOLD);
