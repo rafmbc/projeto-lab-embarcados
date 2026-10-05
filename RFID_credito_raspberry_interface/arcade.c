@@ -117,6 +117,7 @@ static void card_string(const uint8_t *id, char *out) {
 typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; int rhythm; } Row;
 
 static int csv_load(Row *rows, int limit) {
+    memset(rows, 0, limit * sizeof *rows); /* linhas novas (rows[n]) saem zeradas e com '\0' */
     FILE *f = fopen(CSV_FILE, "r"); if (!f) return 0;
     char line[CSV_LINE_MAX]; int n = 0;
     fgets(line, sizeof line, f);
@@ -200,6 +201,7 @@ static int score_record(const char *card, const char *game, int score) {
 
 static int score_load(ScoreEntry *entries, int limit, const char *game) {
     Row rows[128]; int n = csv_load(rows, 128), count = 0;
+    memset(entries, 0, limit * sizeof *entries); /* strncpy de 8 chars nao poe '\0' no card */
     for (int i = 0; i < n && count < limit; i++) {
         int s = !strcmp(game, "Cobrinha") ? rows[i].snake : !strcmp(game, "Asteroides") ? rows[i].asteroid : rows[i].rhythm;
         if (!s) continue;
@@ -222,6 +224,10 @@ static const Note SNAKE_OVER[]     = {{392,160},{349,160},{330,160},{262,160},{1
 static const Note ASTEROID_START[] = {{262,80},{392,80},{523,80},{392,80},{523,80},{784,220},{0,0}};
 static const Note ASTEROID_OVER[]  = {{784,120},{659,120},{523,120},{415,120},{330,120},{220,120},{110,200},{0,0}};
 static const Note RHYTHM_START[]   = {{659,90},{622,90},{659,90},{622,90},{659,200},{0,0}};
+/* Efeitos de um tom so, mesmo volume (BUZZ_DUTY). */
+static const Note SNAKE_EAT[]      = {{1047,60},{0,0}};
+static const Note SHOT_FIRE[]      = {{1568,25},{0,0}};
+static const Note ROCK_BOOM[]      = {{110,90},{0,0}};
 static const Note NEW_RECORD[]     = {{523,100},{659,100},{784,100},{1047,100},{784,100},{1047,100},{1319,300},{0,0}};
 static volatile int melody_on;
 static const Note *melody_queue[2];
@@ -523,7 +529,7 @@ static void draw_snake(void) {
         int ate = next.x==food.x && next.y==food.y; if (ate) snake_len++;
         for (int i=snake_len-1; i>0; i--) snake[i]=snake[i-1];
         snake[0]=next; dx=next_dx; dy=next_dy;
-        if (ate) { snake_score += 10; snake_speed*=0.93; snake_food(); } snake_at=GetTime()+snake_speed;
+        if (ate) { snake_score += 10; snake_speed*=0.93; snake_food(); melody_play(SNAKE_EAT); } snake_at=GetTime()+snake_speed;
     }
     draw_header("COBRINHA", snake_score);
     DrawText("Use os botoes direcionais", CX-130, 72, 18, LIGHTGRAY);
@@ -569,6 +575,7 @@ static void draw_asteroids(void) {
                 shots[i].speed.x = 1.5*rot.x*PLAYER_SPEED;
                 shots[i].speed.y = 1.5*rot.y*PLAYER_SPEED;
                 shots[i].rotation = player.rotation;
+                melody_play(SHOT_FIRE); /* substitui o clique da tecla */
                 break;
             }
         }
@@ -610,6 +617,7 @@ static void draw_asteroids(void) {
                     shots[i].lifeSpawn = 0;
                     // bigMeteor[a].active = false;
                     destroyedMeteorsCount++;
+                    melody_play(ROCK_BOOM);
                     
                     printf("%f", rocks[a].radius);
                     if (rocks[a].radius > 18) { rocks[a].radius=(int)rocks[a].radius*0.7; rocks[a].y+=20; }
