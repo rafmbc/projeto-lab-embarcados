@@ -417,8 +417,8 @@ static const unsigned LANE_KEYS[4] = {LEFT, UP, DOWN, RIGHT};
 #define RH_HIT_Y 400
 #define RH_TILE_H 56
 #define RH_PX 0.25f   /* pixels por ms de musica */
-#define RH_WINDOW 200 /* tolerancia do acerto, ms de musica */
-#define RH_LIVES 3
+#define RH_WINDOW 300 /* tolerancia do acerto, ms de musica */
+#define RH_LIVES 5
 static int song_at[SONG_N], song_len, rhythm_next, rhythm_lives, rhythm_score;
 static double rhythm_clock;
 static Note rhythm_note[2]; /* nota atual + terminador {0,0} */
@@ -581,8 +581,8 @@ static void draw_asteroids(void) {
         {
             shots[i].lifeSpawn++;
             // Movement
-            shots[i].position.x += shots[i].speed.x;
-            shots[i].position.y -= shots[i].speed.y;
+            shots[i].position.x += shots[i].speed.x*dt*60;  /* speed era px/frame a 60 FPS */
+            shots[i].position.y -= shots[i].speed.y*dt*60;
 
             // Collision logic: shoot vs walls
             if  ((shots[i].position.x > screenWidth + shots[i].radius) || (shots[i].position.x < 0 - shots[i].radius) || (shots[i].position.y > screenHeight + shots[i].radius) || (shots[i].position.y < 0 - shots[i].radius))
@@ -675,7 +675,7 @@ int main(void) {
     if (MFRC522_Init('B') != 0) fputs("Erro ao iniciar RFID MFRC522.\n", stderr);
     pthread_mutex_init(&app.lock, NULL); app.state = WAIT_CARD;
     pthread_t thread; pthread_create(&thread, NULL, rfid_loop, NULL); pthread_detach(thread);
-    InitWindow(W, H, "Arcade RFID"); SetTargetFPS(60); controls_init();
+    InitWindow(W, H, "Arcade RFID"); SetTargetFPS(30); controls_init();
     initDisplay();
     while (!WindowShouldClose()) {
         controls_poll();

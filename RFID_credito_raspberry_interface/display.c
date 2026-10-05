@@ -32,9 +32,9 @@ static void disp_out(int data) {
     for (int i = 15; i >= 0; i--) {  /* MSB primeiro: byte alto = digito, baixo = segmentos */
         digitalWrite(DISP_CLOCK, LOW);
         digitalWrite(DISP_DATA, (data >> i) & 1);
-        delayMicroseconds(10);
+        delayMicroseconds(1);   /* era 10 (busy-wait); suba se o display falhar */
         digitalWrite(DISP_CLOCK, HIGH);
-        delayMicroseconds(10);
+        delayMicroseconds(1);
     }
     digitalWrite(DISP_LATCH, HIGH);
 }
