@@ -321,7 +321,7 @@ static void controls_poll(void) {
     if (sampled != held && GetTime() - sampled_at >= DELAY) held = sampled;
     button_pressed = buttons_held & ~old_buttons;
     pressed = held & ~old;
-    if (pressed) buzzer_play(1);
+    if (pressed && !buttons_held) buzzer_play(1); /* clique so no joystick analogico; botoes ficam mudos */
     if (buzz_edges > 0 && GetTime() >= buzz_at) {
         digitalWrite(PIN_BUZZER, (buzz_edges & 1) == 0 ? HIGH : LOW);
         buzz_edges--; buzz_at = GetTime() + 0.07;
@@ -405,7 +405,7 @@ static void start_asteroids(void) {
 
 /* Ritmo (estilo Piano Tiles): os blocos descem nas 4 faixas; aperte o botao da cor
  * da faixa quando o bloco cruza a linha. Cada acerto toca a proxima nota no buzzer. */
-#define S16 300 /* semicolcheia, em ms de musica */
+#define S16 400 /* semicolcheia, em ms de musica (espaco entre notas) */
 static const Note FUR_ELISE[] = {
     {659,S16},{622,S16},{659,S16},{622,S16},{659,S16},{494,S16},{587,S16},{523,S16},{440,3*S16},
     {262,S16},{330,S16},{440,S16},{494,3*S16},
@@ -652,9 +652,9 @@ static void draw_rhythm(void) {
     for (int l = 0; l < 4; l++) {
         if (!button_was_pressed(LANE_KEYS[l])) continue;
         if (l != rhythm_lane(n->f) || fabs(off) > RH_WINDOW) { rhythm_lives--; continue; }
-        if (!melody_on) { /* som dura ate perto da proxima nota, teto 400 ms */
-            int gap = (int)(n->ms / rhythm_speed()) - 110;
-            rhythm_note[0] = (Note){n->f, gap < 40 ? 40 : gap > 400 ? 400 : gap};
+        if (!melody_on) { /* som = metade do espaco ate a proxima nota (teto 300 ms): sobra folga p/ acerto adiantado */
+            int len = (int)(n->ms / rhythm_speed()) / 2;
+            rhythm_note[0] = (Note){n->f, len < 40 ? 40 : len > 300 ? 300 : len};
             melody_play(rhythm_note);
         }
         rhythm_score += 10; rhythm_next++; off = 0; break;
