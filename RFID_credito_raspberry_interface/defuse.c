@@ -10,7 +10,7 @@ static const Note DF_LOCK[]        = {{1319,120},{0,0}}; /* pot travado (desarma
  * A cada rodada a faixa muda de lugar e encolhe; o tempo tambem encolhe, mais devagar. */
 static const int DF_CH[3] = {4, 3, 2}; /* ADS7830: barra de cima = RP3 (A4), meio = RP2 (A3), baixo = RP1 (A2) */
 static const char *DF_LABEL[3] = {"RP3", "RP2", "RP1"};
-#define POT_INVERT 0      /* 1 se girar o pot p/ direita levar o ponteiro p/ esquerda */
+#define POT_INVERT 1      /* nesta placa o pot esta invertido; 0 se o ponteiro girar ao contrario */
 #define DF_R 800          /* raio externo do arco, px */
 #define DF_THICK 50
 #define DF_SPAN 26        /* meia abertura do arco, graus */
@@ -28,14 +28,36 @@ static double df_deadline, df_beep_at;
 static float df_angle(float span, float p) { return 270 - span + p*2*span; }
 static Vector2 df_point(Vector2 c, float r, float a) { return (Vector2){c.x + cosf(a*DEG2RAD)*r, c.y + sinf(a*DEG2RAD)*r}; }
 
+/* Arco preenchido com triangulos, mesma conta de angulo dos ponteiros.
+ * (O DrawRing do Raylib da Pi usa outra convencao de angulo e desenhava fora da tela.) Exige a0 < a1. */
+static void df_band(Vector2 c, float r0, float r1, float a0, float a1, Color col) {
+    const int n = 32; float st = (a1 - a0)/n;
+    for (int k = 0; k < n; k++) {
+        float a = a0 + k*st, b = a + st;
+        Vector2 o0 = df_point(c, r1, a), o1 = df_point(c, r1, b), i0 = df_point(c, r0, a), i1 = df_point(c, r0, b);
+        DrawTriangle(o0, i0, i1, col); DrawTriangle(o0, i1, o1, col); /* anti-horario na tela */
+    }
+}
+
+static void df_outline(Vector2 c, float r0, float r1, float a0, float a1, Color col) {
+    const int n = 32; float st = (a1 - a0)/n;
+    for (int k = 0; k < n; k++) {
+        float a = a0 + k*st, b = a + st;
+        DrawLineEx(df_point(c, r1, a), df_point(c, r1, b), 2, col);
+        DrawLineEx(df_point(c, r0, a), df_point(c, r0, b), 2, col);
+    }
+    DrawLineEx(df_point(c, r0, a0), df_point(c, r1, a0), 2, col);
+    DrawLineEx(df_point(c, r0, a1), df_point(c, r1, a1), 2, col);
+}
+
 static void draw_defuse_bar(Vector2 c, float r, float th, float span, float p, float t, float w, Color zone, float hold) {
     float a0 = df_angle(span, t - w/2), a1 = df_angle(span, t + w/2), ap = df_angle(span, p);
-    DrawRing(c, r - th, r, 270 - span, 270 + span, 64, (Color){35,45,85,255});
-    DrawRingLines(c, r - th, r, 270 - span, 270 + span, 64, (Color){65,80,125,255});
-    DrawRing(c, r - th, r, a0, a1, 8, Fade(zone, .45f));
+    df_band(c, r - th, r, 270 - span, 270 + span, (Color){35,45,85,255});
+    df_outline(c, r - th, r, 270 - span, 270 + span, (Color){65,80,125,255});
+    df_band(c, r - th, r, a0, a1, Fade(zone, .45f));
     DrawLineEx(df_point(c, r - th, a0), df_point(c, r, a0), 3, zone);
     DrawLineEx(df_point(c, r - th, a1), df_point(c, r, a1), 3, zone);
-    if (hold > 0) DrawRing(c, r + 3, r + 8, a0, a0 + (a1 - a0)*hold, 8, GREEN);
+    if (hold > 0) df_band(c, r + 3, r + 8, a0, a0 + (a1 - a0)*hold, GREEN);
     DrawLineEx(df_point(c, r - th - 14, ap), df_point(c, r + 10, ap), 5, BLUE);
     DrawCircleV(df_point(c, r - th - 14, ap), 7, BLUE);
 }
@@ -89,7 +111,7 @@ static void draw_defuse(void) {
         if (df_hold[i] >= DF_HOLD) { df_locked[i] = 1; done++; melody_play(DF_LOCK); }
     }
     if (done == 3) { /* bomba desarmada: pontua e comeca a proxima rodada */
-        defuse_score += 100*(df_round+1) + (int)(left*10);
+        defuse_score += 10*(df_round+1) + (int)left; /* rodada N vale 10*N + 1 por segundo que sobrou */
         df_round++; defuse_round(); left = df_time;
     }
     if (left <= 0) { alarm_beep(400); game_over("Defuse", defuse_score, ASTEROID_OVER); return; }
