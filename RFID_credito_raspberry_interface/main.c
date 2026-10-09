@@ -34,7 +34,7 @@
 
 /* ── CSV ─────────────────────────────────────────────────────────────── */
 #define CSV_FILE     "cartoes.csv"
-#define CSV_HEADER   "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse\n"
+#define CSV_HEADER   "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse,Pont_Defesa\n"
 #define CSV_LINE_MAX 64
 
 static void card_id_str(uint8_t *id, char *out)
@@ -81,8 +81,8 @@ static int csv_write_credit(const char *id_str, int novo)
     while (n < 128 && fgets(lines[n], CSV_LINE_MAX, f)) {
         char fid[9]; int val;
         if (sscanf(lines[n], "%8[^,],%d", fid, &val) >= 2 && strcmp(fid, id_str) == 0) {
-            /* preserva ,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse */
-            char rest[CSV_LINE_MAX] = ",,,0,0,0,0";
+            /* preserva ,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse,Pont_Defesa */
+            char rest[CSV_LINE_MAX] = ",,,0,0,0,0,0";
             char *p = strchr(lines[n], ',');      /* aponta em ,Credito */
             if (p) p = strchr(p+1, ',');          /* aponta em ,Codigo... */
             if (p) { strncpy(rest, p, CSV_LINE_MAX-1); rest[strcspn(rest, "\r\n")] = '\0'; }
@@ -93,7 +93,7 @@ static int csv_write_credit(const char *id_str, int novo)
     }
     fclose(f);
     if (!found && n < 128)
-        snprintf(lines[n++], CSV_LINE_MAX, "%s,%d,,0,0,0,0\n", id_str, novo);
+        snprintf(lines[n++], CSV_LINE_MAX, "%s,%d,,0,0,0,0,0\n", id_str, novo);
     f = fopen(CSV_FILE, "w");
     if (!f) return -1;
     for (int i = 0; i < n; i++) fputs(lines[i], f);

@@ -1,6 +1,6 @@
 # Arcade RFID
 
-O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há quatro jogos Raylib: Cobrinha, Asteroides, Ritmo e Defuse. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está em `arcade.c` (sistema: GPIO, ADC, buzzers, RFID, `cartoes.csv`, menus e troca entre jogos) e cada jogo tem seu arquivo: `snake.c`, `asteroids.c`, `rhythm.c`, `defuse.c`. Os jogos entram por `#include` no `arcade.c`, então o `build-arcade.sh` continua compilando só o `arcade.c`.
+O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há cinco jogos Raylib: Cobrinha, Asteroides, Ritmo, Defuse e Defesa. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está em `arcade.c` (sistema: GPIO, ADC, buzzers, RFID, `cartoes.csv`, menus e troca entre jogos) e cada jogo tem seu arquivo: `snake.c`, `asteroids.c`, `rhythm.c`, `defuse.c`, `defense.c`. Os jogos entram por `#include` no `arcade.c`, então o `build-arcade.sh` continua compilando só o `arcade.c`.
 
 No menu **RECARREGAR CREDITOS**, qualquer cartão pode receber +1, +5 ou +10 créditos. É uma recarga livre para a demonstração; não há cobrança/pagamento integrado.
 
@@ -59,7 +59,8 @@ O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
 - **Ritmo (estilo Piano Tiles):** blocos descem em 4 faixas com as cores dos botões (esquerda amarelo, cima azul, baixo vermelho, direita verde). Aperte o botão da faixa quando o bloco cruza a linha; cada acerto toca a próxima nota de *Für Elise* no buzzer, com o mesmo volume (`BUZZ_DUTY`) dos outros jogos. Errar o botão ou deixar o bloco passar custa 1 de 3 vidas; a música repete 15% mais rápida a cada volta.
 - **Defuse:** os potenciômetros RP3, RP2 e RP1 (ADS7830 canais 4, 3 e 2) movem os ponteiros azuis das barras de cima, do meio e de baixo. Deixe cada ponteiro parado na faixa vermelha por 0,8 s para travá-lo (fica verde) antes do tempo acabar. A cada rodada a faixa muda de lugar e encolhe 15%; o tempo encolhe 7%. Nos últimos 3 s o buzzer ativo (BCM 12) apita cada vez mais rápido, com volume reduzido por `ALARM_DUTY`. Na chave de funções S3, deixe **Active Buzzer** em ON e **Relay** em OFF (o relé também usa o BCM 12). Os pots desta placa são invertidos (`POT_INVERT 1`); se o ponteiro andar ao contrário, mude para 0.
-- **PLACAR:** mostra Cobrinha, Asteroides, Ritmo e Defuse em quatro colunas na mesma tela. A melhor pontuação de cada cartão por jogo fica em `cartoes.csv` (colunas `Pont_*`).
+- **Defesa:** o potenciômetro RP1 (ADS7830 canal 2) gira o canhão azul; a linha tracejada vermelha mostra a trajetória do míssil. O botão azul (cima) dispara. São 2 mísseis por vez, cada um com 1,2 s de recarga (indicadores no topo). Asteroides entram por cima com tamanho, direção e velocidade aleatórios; os grandes se dividem em 2 ao serem destruídos (grande 5 pontos, pequeno 10). Cada asteroide que toca o chão tira 1 de 3 vidas (bipe no buzzer ativo). Começa com 2 asteroides na tela e ganha +1 a cada 15 s, até 10.
+- **PLACAR:** mostra Cobrinha, Asteroides, Ritmo, Defuse e Defesa em cinco colunas na mesma tela. A melhor pontuação de cada cartão por jogo fica em `cartoes.csv` (colunas `Pont_*`).
 
 ## Código público do cartão
 
