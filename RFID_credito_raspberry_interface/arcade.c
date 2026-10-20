@@ -43,7 +43,7 @@
 #define GAME_COUNT 5
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, ADMIN_TARGET, ADMIN_RECHARGE, SCORES, SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE, MESSAGE } State;
+typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, ADMIN_TARGET, ADMIN_RECHARGE, SCORES, SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { char card[9]; char game[16]; int score; } ScoreEntry;
 typedef struct {
@@ -412,12 +412,6 @@ static void start_game(State game, const char *card, int credits) {
     melody_play(game == SNAKE ? SNAKE_START : game == ASTEROIDS ? ASTEROID_START : game == RHYTHM ? RHYTHM_START : game == DEFUSE ? DEFUSE_START : DEFENSE_START);
 }
 
-static void recharge(const char *card, int credits, int value) {
-    if (csv_write(card, credits + value) < 0) { show_message("Erro ao salvar recarga", OPTIONS); buzzer_play(3); return; }
-    pthread_mutex_lock(&app.lock); app.credits = credits + value; pthread_mutex_unlock(&app.lock);
-    show_message(TextFormat("Recarga de +%d credito(s)", value), OPTIONS); buzzer_play(2);
-}
-
 static void admin_recharge(const char *admin, const char *target, int credits, int value) {
     if (!target[0] || csv_write(target, credits + value) < 0) { show_message("Erro ao salvar recarga", ADMIN_RECHARGE); buzzer_play(3); return; }
     admin_log_charge(admin, target, value, credits + value);
@@ -491,18 +485,25 @@ int main(void) {
                 if (was_pressed(UP)) { const State games[GAME_COUNT] = {SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE}; start_game(games[selected], card, credits); }
                 else if (was_pressed(DOWN)) { option_selected = 0; set_state(OPTIONS); }
                 break;
-            case OPTIONS: { /* A opcao de recarga de outro cartao so existe em sessoes administrativas. */
-                int option_count = is_admin ? 5 : 4;
+            case OPTIONS: { /* Somente a sessao administrativa pode iniciar uma recarga. */
+                int option_count = is_admin ? 4 : 3;
                 if (was_pressed(UP) && option_selected > 0) option_selected--;
                 if (was_pressed(DOWN) && option_selected < option_count - 1) option_selected++;
                 if (was_pressed(LEFT)) set_state(MENU);
                 if (was_pressed(RIGHT)) {
-                    switch (option_selected) {
-                        case 0: recharge_selected = 0; set_state(RECHARGE); break;
-                        case 1: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
-                        case 2: set_state(SCORES); break;
-                        case 3: if (is_admin) set_state(ADMIN_TARGET); else set_state(WAIT_CARD); break;
-                        default: set_state(WAIT_CARD); break;
+                    if (is_admin) {
+                        switch (option_selected) {
+                            case 0: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
+                            case 1: set_state(SCORES); break;
+                            case 2: set_state(ADMIN_TARGET); break;
+                            default: set_state(WAIT_CARD); break;
+                        }
+                    } else {
+                        switch (option_selected) {
+                            case 0: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
+                            case 1: set_state(SCORES); break;
+                            default: set_state(WAIT_CARD); break;
+                        }
                     }
                 }
                 break;
@@ -522,16 +523,6 @@ int main(void) {
                 break;
             case SCORES:
                 if (was_pressed(LEFT) || was_pressed(RIGHT)) set_state(OPTIONS);
-                break;
-            case RECHARGE:
-                if (was_pressed(UP) && recharge_selected > 0) recharge_selected--;
-                if (was_pressed(DOWN) && recharge_selected < 3) recharge_selected++;
-                if (was_pressed(LEFT)) set_state(OPTIONS);
-                if (was_pressed(RIGHT)) {
-                    const int packs[] = {1, 5, 10};
-                    if (recharge_selected < 3) recharge(card,credits,packs[recharge_selected]);
-                    else set_state(OPTIONS);
-                }
                 break;
             default: break;
         }
@@ -569,11 +560,13 @@ int main(void) {
             draw_button("OPCOES", 350, 0);
             text_center("Esquerda/direita: trocar jogo | Cima: jogar | Baixo: opcoes", 440, 16, LIGHTGRAY);
         } else if (state==OPTIONS) {
-            const char *items[] = {"RECARREGAR SALDO", "CONSULTAR SALDO", "PLACAR", "CARREGAR OUTRO CARTAO", "ENCERRAR CARTAO"};
-            int item_count = is_admin ? 5 : 4;
+            const char *admin_items[] = {"CONSULTAR SALDO", "PLACAR", "CARREGAR OUTRO CARTAO", "ENCERRAR CARTAO"};
+            const char *player_items[] = {"CONSULTAR SALDO", "PLACAR", "ENCERRAR CARTAO"};
+            const char * const *items = is_admin ? admin_items : player_items;
+            int item_count = is_admin ? 4 : 3;
             text_center(is_admin ? "OPCOES ADMIN" : "OPCOES", 16, 44, RAYWHITE);
-            draw_wallet(public_code, credits, 398);
-            for (int i = 0; i < item_count; i++) draw_button(items[i], 82 + i*58, i == option_selected);
+            draw_wallet(public_code, credits, 370);
+            for (int i = 0; i < item_count; i++) draw_button(items[i], 100 + i*62, i == option_selected);
             text_center("Cima/baixo: escolher | Direita: confirmar | Esquerda: voltar aos jogos", 440, 16, LIGHTGRAY);
         } else if (state==ADMIN_TARGET) {
             text_center("RECARGA ADMIN", 70, 32, GOLD);
@@ -586,13 +579,6 @@ int main(void) {
             for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,145+i*55,390,42},.2f,8,c); DrawText(packs[i],270,155+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,155+i*55,22,YELLOW); }
             DrawText("Selecione os creditos para este cartao",CX-165,380,17,LIGHTGRAY);
             DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,420,16,LIGHTGRAY);
-        } else if (state==RECHARGE) {
-            const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
-            DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);
-            DrawText(TextFormat("Codigo %s   |   Saldo: %d",public_code,credits),CX-145,112,20,RAYWHITE);
-            for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,155+i*55,390,42},.2f,8,c); DrawText(packs[i],270,165+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,165+i*55,22,YELLOW); }
-            DrawText("Selecione o pacote desejado",CX-120,395,17,LIGHTGRAY);
-            DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,425,16,LIGHTGRAY);
         } else if (state==SCORES) {
             static const char *score_games[GAME_COUNT] = {"Cobrinha", "Asteroides", "Ritmo", "Defuse", "Defesa"};
             const Color score_colors[GAME_COUNT] = {LIME, SKYBLUE, VIOLET, ORANGE, BLUE};
