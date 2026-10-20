@@ -576,8 +576,8 @@ int main(void) {
             const char * const *items = is_admin ? admin_items : player_items;
             int item_count = is_admin ? 5 : 3;
             text_center(is_admin ? "OPCOES ADMIN" : "OPCOES", 16, 44, RAYWHITE);
-            draw_wallet(public_code, credits, 370);
-            for (int i = 0; i < item_count; i++) draw_button(items[i], 100 + i*62, i == option_selected);
+            draw_wallet(public_code, credits, is_admin ? 410 : 370);
+            for (int i = 0; i < item_count; i++) draw_button(items[i], is_admin ? 72 + i*56 : 100 + i*62, i == option_selected);
             text_center("Cima/baixo: escolher | Direita: confirmar | Esquerda: voltar aos jogos", 440, 16, LIGHTGRAY);
         } else if (state==ADMIN_TARGET) {
             text_center("RECARGA ADMIN", 70, 32, GOLD);
