@@ -188,6 +188,16 @@ static void admin_target_activate(const char *card) {
     pthread_mutex_unlock(&app.lock);
 }
 
+static void admin_self_recharge(void) {
+    pthread_mutex_lock(&app.lock);
+    strcpy(app.target_card, app.card);
+    strcpy(app.target_code, app.code);
+    app.target_credits = app.credits;
+    app.state = ADMIN_RECHARGE;
+    recharge_selected = 0;
+    pthread_mutex_unlock(&app.lock);
+}
+
 /* Registra score; mantem apenas o melhor por jogo. */
 static int score_record(const char *card, const char *game, int score) {
     Row rows[128]; int n = csv_load(rows, 128); int record = 0;
@@ -486,16 +496,17 @@ int main(void) {
                 else if (was_pressed(DOWN)) { option_selected = 0; set_state(OPTIONS); }
                 break;
             case OPTIONS: { /* Somente a sessao administrativa pode iniciar uma recarga. */
-                int option_count = is_admin ? 4 : 3;
+                int option_count = is_admin ? 5 : 3;
                 if (was_pressed(UP) && option_selected > 0) option_selected--;
                 if (was_pressed(DOWN) && option_selected < option_count - 1) option_selected++;
                 if (was_pressed(LEFT)) set_state(MENU);
                 if (was_pressed(RIGHT)) {
                     if (is_admin) {
                         switch (option_selected) {
-                            case 0: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
-                            case 1: set_state(SCORES); break;
-                            case 2: set_state(ADMIN_TARGET); break;
+                            case 0: admin_self_recharge(); break;
+                            case 1: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
+                            case 2: set_state(SCORES); break;
+                            case 3: set_state(ADMIN_TARGET); break;
                             default: set_state(WAIT_CARD); break;
                         }
                     } else {
@@ -560,10 +571,10 @@ int main(void) {
             draw_button("OPCOES", 350, 0);
             text_center("Esquerda/direita: trocar jogo | Cima: jogar | Baixo: opcoes", 440, 16, LIGHTGRAY);
         } else if (state==OPTIONS) {
-            const char *admin_items[] = {"CONSULTAR SALDO", "PLACAR", "CARREGAR OUTRO CARTAO", "ENCERRAR CARTAO"};
+            const char *admin_items[] = {"RECARREGAR MEU SALDO", "CONSULTAR SALDO", "PLACAR", "CARREGAR OUTRO CARTAO", "ENCERRAR CARTAO"};
             const char *player_items[] = {"CONSULTAR SALDO", "PLACAR", "ENCERRAR CARTAO"};
             const char * const *items = is_admin ? admin_items : player_items;
-            int item_count = is_admin ? 4 : 3;
+            int item_count = is_admin ? 5 : 3;
             text_center(is_admin ? "OPCOES ADMIN" : "OPCOES", 16, 44, RAYWHITE);
             draw_wallet(public_code, credits, 370);
             for (int i = 0; i < item_count; i++) draw_button(items[i], 100 + i*62, i == option_selected);
