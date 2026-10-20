@@ -2,7 +2,18 @@
 
 O arcade reaproveita a leitura RC522 e o arquivo `cartoes.csv`: cada partida custa **1 crédito**. Há cinco jogos Raylib: Cobrinha, Asteroides, Ritmo, Defuse e Defesa. A interface anterior (`main.c`/`build.sh`) foi preservada; o arcade está em `arcade.c` (sistema: GPIO, ADC, buzzers, RFID, `cartoes.csv`, menus e troca entre jogos) e cada jogo tem seu arquivo: `snake.c`, `asteroids.c`, `rhythm.c`, `defuse.c`, `defense.c`. Os jogos entram por `#include` no `arcade.c`, então o `build-arcade.sh` continua compilando só o `arcade.c`.
 
-No menu **RECARREGAR CREDITOS**, qualquer cartão pode receber +1, +5 ou +10 créditos. É uma recarga livre para a demonstração; não há cobrança/pagamento integrado.
+No menu **RECARREGAR CREDITOS**, qualquer cartão pode receber +1, +5 ou +10 créditos para si. É uma recarga livre para a demonstração; não há cobrança/pagamento integrado.
+
+## Cartões administrativos
+
+A última coluna de `cartoes.csv` é `IsAdmin`: use `1` para um cartão administrativo e `0` para um cartão comum. A coluna foi adicionada ao fim, então linhas antigas de oito colunas continuam funcionando como `0`. Exemplo:
+
+```csv
+CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse,Pont_Defesa,IsAdmin
+F9A44BBD,6,FAB,40,196,720,966,90,1
+```
+
+Ao aproximar um cartão com `IsAdmin=1`, **OPCOES ADMIN** mostra **CARREGAR OUTRO CARTAO**. Selecione-a, aproxime o cartão destinatário e escolha +1, +5 ou +10. A sessão administrativa termina ao escolher **ENCERRAR CARTAO**. Cada recarga administrativa é registrada em `admin_log.csv` com cartão administrador, destinatário, créditos adicionados e saldo final.
 
 ## Controles físicos
 
@@ -54,7 +65,7 @@ O arcade lê X no canal 5, Y no canal 6 e o clique central no BCM 7. Nesta placa
 ## Controles e placar
 
 - **Tela de jogos (carrossel):** esquerda/direita troca o jogo mostrado (titulo + foto), cima entra no jogo (1 credito), baixo abre **Opcoes**. Codigo e creditos aparecem abaixo do botao.
-- **Opcoes:** cima/baixo escolhe (Recarregar Saldo, Consultar Saldo, Placar, Encerrar Cartao), direita confirma, esquerda volta aos jogos. Recarga e Placar voltam para Opcoes.
+- **Opcoes:** cima/baixo escolhe, direita confirma, esquerda volta aos jogos. Para cartões com `IsAdmin=1`, aparece também **Carregar Outro Cartao**: aproxime o destinatário e escolha a recarga. Recarga e Placar voltam para Opcoes.
 - **Cobrinha:** usa somente os quatro botões direcionais da Projects Board.
 - **Asteroides:** usa somente os eixos do joystick analógico; os botões não movem a nave.
 - **Ritmo (estilo Piano Tiles):** blocos descem em 4 faixas com as cores dos botões (esquerda amarelo, cima azul, baixo vermelho, direita verde). Aperte o botão da faixa quando o bloco cruza a linha; cada acerto toca a próxima nota de *Für Elise* no buzzer, com o mesmo volume (`BUZZ_DUTY`) dos outros jogos. Errar o botão ou deixar o bloco passar custa 1 de 3 vidas; a música repete 15% mais rápida a cada volta.

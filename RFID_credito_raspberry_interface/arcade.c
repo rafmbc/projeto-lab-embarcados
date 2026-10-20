@@ -23,8 +23,9 @@
 #define H 480
 #define CX (W/2)
 #define CSV_FILE "cartoes.csv"
-#define CSV_HEADER "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse,Pont_Defesa\n"
-#define CSV_LINE_MAX 64
+#define ADMIN_LOG_FILE "admin_log.csv"
+#define CSV_HEADER "CardID,Credito,Codigo,Pont_Cobrinha,Pont_Asteroides,Pont_Ritmo,Pont_Defuse,Pont_Defesa,IsAdmin\n"
+#define CSV_LINE_MAX 80
 #define PIN_UP 20
 #define PIN_LEFT 26
 #define PIN_RIGHT 16
@@ -42,7 +43,7 @@
 #define GAME_COUNT 5
 
 enum { UP = 1, LEFT = 2, RIGHT = 4, DOWN = 8 };
-typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, SCORES, SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE, MESSAGE } State;
+typedef enum { WAIT_CARD, CARD_CODE, MENU, OPTIONS, RECHARGE, ADMIN_TARGET, ADMIN_RECHARGE, SCORES, SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE, MESSAGE } State;
 typedef struct { int x, y; } Cell;
 typedef struct { char card[9]; char game[16]; int score; } ScoreEntry;
 typedef struct {
@@ -51,6 +52,10 @@ typedef struct {
     char card[9];
     char code[4];
     int credits;
+    int is_admin;
+    char target_card[9];
+    char target_code[4];
+    int target_credits;
     char message[96];
     State message_back;
 } App;
@@ -73,7 +78,7 @@ static void card_string(const uint8_t *id, char *out) {
 }
 
 /* ponytail: uma linha por cartao. Teto: 128 cartoes. Upgrade path: SQLite. */
-typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; int rhythm; int defuse; int defense; } Row;
+typedef struct { char card[9]; char code[4]; int credits; int snake; int asteroid; int rhythm; int defuse; int defense; int is_admin; } Row;
 
 static int csv_load(Row *rows, int limit) {
     memset(rows, 0, limit * sizeof *rows); /* linhas novas (rows[n]) saem zeradas e com '\0' */
@@ -82,7 +87,8 @@ static int csv_load(Row *rows, int limit) {
     fgets(line, sizeof line, f);
     while (n < limit && fgets(line, sizeof line, f)) {
         Row r = {0};
-        sscanf(line, "%8[^,],%d,%3[^,],%d,%d,%d,%d,%d", r.card, &r.credits, r.code, &r.snake, &r.asteroid, &r.rhythm, &r.defuse, &r.defense);
+        /* IsAdmin foi acrescentado no fim: linhas antigas, com oito colunas, continuam como jogador comum. */
+        sscanf(line, "%8[^,],%d,%3[^,],%d,%d,%d,%d,%d,%d", r.card, &r.credits, r.code, &r.snake, &r.asteroid, &r.rhythm, &r.defuse, &r.defense, &r.is_admin);
         if (r.card[0]) rows[n++] = r;
     }
     fclose(f); return n;
@@ -92,7 +98,7 @@ static void csv_save(Row *rows, int n) {
     FILE *f = fopen(CSV_FILE, "w"); if (!f) return;
     fputs(CSV_HEADER, f);
     for (int i = 0; i < n; i++)
-        fprintf(f, "%s,%d,%s,%d,%d,%d,%d,%d\n", rows[i].card, rows[i].credits, rows[i].code, rows[i].snake, rows[i].asteroid, rows[i].rhythm, rows[i].defuse, rows[i].defense);
+        fprintf(f, "%s,%d,%s,%d,%d,%d,%d,%d,%d\n", rows[i].card, rows[i].credits, rows[i].code, rows[i].snake, rows[i].asteroid, rows[i].rhythm, rows[i].defuse, rows[i].defense, rows[i].is_admin ? 1 : 0);
     fclose(f);
 }
 
@@ -138,12 +144,47 @@ static int card_code_write(const char *card, const char *code) {
 }
 
 static void card_activate(const char *card) {
-    char code[4] = {0}; int registered;
-    csv_init(); registered = card_code_read(card, code);
+    char code[4] = {0}; int registered, credits = 0, is_admin = 0;
+    csv_init();
+    Row rows[128]; int n = csv_load(rows, 128); Row *r = csv_find(rows, n, card);
+    if (r) { credits = r->credits; is_admin = r->is_admin; }
+    registered = card_code_read(card, code);
     pthread_mutex_lock(&app.lock);
-    strcpy(app.card, card); app.credits = csv_read(card);
+    strcpy(app.card, card); app.credits = credits; app.is_admin = is_admin;
+    app.target_card[0] = app.target_code[0] = 0; app.target_credits = 0;
     if (registered) { strcpy(app.code, code); app.state = MENU; }
     else { app.code[0] = 0; app.state = CARD_CODE; code_letters[0] = code_letters[1] = code_letters[2] = 'A'; code_index = 0; code_error[0] = 0; }
+    pthread_mutex_unlock(&app.lock);
+}
+
+static void show_message(const char *text, State back);
+
+static void admin_log_charge(const char *admin, const char *target, int value, int balance) {
+    FILE *f = fopen(ADMIN_LOG_FILE, "a+");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) == 0 && ftell(f) == 0)
+        fputs("AdminCard,TargetCard,CreditsAdded,TargetBalance\n", f);
+    fprintf(f, "%s,%s,%d,%d\n", admin, target, value, balance);
+    fclose(f);
+}
+
+/* O leitor continua ativo nesta tela, mas o proximo cartao passa a ser o destinatario, nao uma nova sessao. */
+static void admin_target_activate(const char *card) {
+    char admin_card[9];
+    pthread_mutex_lock(&app.lock);
+    if (app.state != ADMIN_TARGET) { pthread_mutex_unlock(&app.lock); return; }
+    strcpy(admin_card, app.card);
+    pthread_mutex_unlock(&app.lock);
+    if (!strcmp(card, admin_card)) { show_message("Aproxime outro cartao", ADMIN_TARGET); return; }
+
+    Row rows[128]; int n = csv_load(rows, 128); Row *r = csv_find(rows, n, card);
+    char code[4] = {0}; int credits = r ? r->credits : 0;
+    if (r && r->code[0]) strcpy(code, r->code);
+    pthread_mutex_lock(&app.lock);
+    if (app.state == ADMIN_TARGET) {
+        strcpy(app.target_card, card); strcpy(app.target_code, code); app.target_credits = credits;
+        app.state = ADMIN_RECHARGE; recharge_selected = 0;
+    }
     pthread_mutex_unlock(&app.lock);
 }
 
@@ -328,12 +369,13 @@ static void *rfid_loop(void *unused) {
     (void)unused;
     for (;;) {
         pthread_mutex_lock(&app.lock); State state = app.state; pthread_mutex_unlock(&app.lock);
-        if (state != WAIT_CARD) { usleep(80000); continue; }
+        if (state != WAIT_CARD && state != ADMIN_TARGET) { usleep(80000); continue; }
         if (MFRC522_Request(PICC_REQIDL, tag) != MI_OK || MFRC522_Anticoll(serial) != MI_OK || MFRC522_SelectTag(serial) == 0) {
             MFRC522_Halt(); usleep(50000); continue;
         }
         char card[9]; card_string(serial, card);
-        card_activate(card);
+        if (state == ADMIN_TARGET) admin_target_activate(card);
+        else card_activate(card);
         buzzer_play(2); MFRC522_Halt();
     }
     return NULL;
@@ -376,6 +418,13 @@ static void recharge(const char *card, int credits, int value) {
     show_message(TextFormat("Recarga de +%d credito(s)", value), OPTIONS); buzzer_play(2);
 }
 
+static void admin_recharge(const char *admin, const char *target, int credits, int value) {
+    if (!target[0] || csv_write(target, credits + value) < 0) { show_message("Erro ao salvar recarga", ADMIN_RECHARGE); buzzer_play(3); return; }
+    admin_log_charge(admin, target, value, credits + value);
+    pthread_mutex_lock(&app.lock); app.target_credits = credits + value; pthread_mutex_unlock(&app.lock);
+    show_message(TextFormat("Recarga de +%d credito(s) concluida", value), OPTIONS); buzzer_play(2);
+}
+
 static void draw_wallet(const char *code, int credits, int y) {
     text_center(TextFormat("Codigo %s  |  Creditos: %d  |  1 credito por partida", code, credits), y, 18, GOLD);
 }
@@ -408,7 +457,7 @@ int main(void) {
     initDisplay();
     while (!WindowShouldClose()) {
         controls_poll();
-        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; char note[96]; strcpy(note,app.message); State back=app.message_back; pthread_mutex_unlock(&app.lock);
+        pthread_mutex_lock(&app.lock); State state=app.state; char card[9]; strcpy(card,app.card); char public_code[4]; strcpy(public_code,app.code); int credits=app.credits; int is_admin=app.is_admin; char target_card[9]; strcpy(target_card,app.target_card); char target_code[4]; strcpy(target_code,app.target_code); int target_credits=app.target_credits; char note[96]; strcpy(note,app.message); State back=app.message_back; pthread_mutex_unlock(&app.lock);
         switch(state){
             case WAIT_CARD:
                 break;
@@ -442,17 +491,33 @@ int main(void) {
                 if (was_pressed(UP)) { const State games[GAME_COUNT] = {SNAKE, ASTEROIDS, RHYTHM, DEFUSE, DEFENSE}; start_game(games[selected], card, credits); }
                 else if (was_pressed(DOWN)) { option_selected = 0; set_state(OPTIONS); }
                 break;
-            case OPTIONS: /* cima/baixo escolhe, direita confirma, esquerda volta aos jogos */
+            case OPTIONS: { /* A opcao de recarga de outro cartao so existe em sessoes administrativas. */
+                int option_count = is_admin ? 5 : 4;
                 if (was_pressed(UP) && option_selected > 0) option_selected--;
-                if (was_pressed(DOWN) && option_selected < 3) option_selected++;
+                if (was_pressed(DOWN) && option_selected < option_count - 1) option_selected++;
                 if (was_pressed(LEFT)) set_state(MENU);
                 if (was_pressed(RIGHT)) {
                     switch (option_selected) {
                         case 0: recharge_selected = 0; set_state(RECHARGE); break;
                         case 1: show_message(TextFormat("Saldo: %d credito(s)", credits), OPTIONS); break;
                         case 2: set_state(SCORES); break;
+                        case 3: if (is_admin) set_state(ADMIN_TARGET); else set_state(WAIT_CARD); break;
                         default: set_state(WAIT_CARD); break;
                     }
+                }
+                break;
+            }
+            case ADMIN_TARGET:
+                if (was_pressed(LEFT)) set_state(OPTIONS);
+                break;
+            case ADMIN_RECHARGE:
+                if (was_pressed(UP) && recharge_selected > 0) recharge_selected--;
+                if (was_pressed(DOWN) && recharge_selected < 3) recharge_selected++;
+                if (was_pressed(LEFT)) set_state(OPTIONS);
+                if (was_pressed(RIGHT)) {
+                    const int packs[] = {1, 5, 10};
+                    if (recharge_selected < 3) admin_recharge(card, target_card, target_credits, packs[recharge_selected]);
+                    else set_state(OPTIONS);
                 }
                 break;
             case SCORES:
@@ -504,11 +569,23 @@ int main(void) {
             draw_button("OPCOES", 350, 0);
             text_center("Esquerda/direita: trocar jogo | Cima: jogar | Baixo: opcoes", 440, 16, LIGHTGRAY);
         } else if (state==OPTIONS) {
-            const char *items[] = {"RECARREGAR SALDO", "CONSULTAR SALDO", "PLACAR", "ENCERRAR CARTAO"};
-            text_center("OPCOES", 16, 44, RAYWHITE);
-            draw_wallet(public_code, credits, 370);
-            for (int i = 0; i < 4; i++) draw_button(items[i], 100 + i*62, i == option_selected);
+            const char *items[] = {"RECARREGAR SALDO", "CONSULTAR SALDO", "PLACAR", "CARREGAR OUTRO CARTAO", "ENCERRAR CARTAO"};
+            int item_count = is_admin ? 5 : 4;
+            text_center(is_admin ? "OPCOES ADMIN" : "OPCOES", 16, 44, RAYWHITE);
+            draw_wallet(public_code, credits, 398);
+            for (int i = 0; i < item_count; i++) draw_button(items[i], 82 + i*58, i == option_selected);
             text_center("Cima/baixo: escolher | Direita: confirmar | Esquerda: voltar aos jogos", 440, 16, LIGHTGRAY);
+        } else if (state==ADMIN_TARGET) {
+            text_center("RECARGA ADMIN", 70, 32, GOLD);
+            text_center("APROXIME O CARTAO A CARREGAR", 155, 25, RAYWHITE);
+            text_center("Esquerda: cancelar", 390, 18, LIGHTGRAY);
+        } else if (state==ADMIN_RECHARGE) {
+            const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
+            DrawText("RECARGA ADMIN", CX-130,60,30,GOLD);
+            DrawText(TextFormat("Cartao: %s   |   Saldo: %d", target_code[0] ? target_code : "NOVO", target_credits),CX-155,105,20,RAYWHITE);
+            for (int i=0;i<4;i++) { Color c=i==recharge_selected?(Color){50,150,90,255}:(Color){35,65,55,255}; DrawRectangleRounded((Rectangle){205,145+i*55,390,42},.2f,8,c); DrawText(packs[i],270,155+i*55,19,WHITE); if(i==recharge_selected)DrawText(">",220,155+i*55,22,YELLOW); }
+            DrawText("Selecione os creditos para este cartao",CX-165,380,17,LIGHTGRAY);
+            DrawText("Cima/baixo seleciona | direita confirma | esquerda volta",140,420,16,LIGHTGRAY);
         } else if (state==RECHARGE) {
             const char *packs[] = {"+1 CREDITO","+5 CREDITOS","+10 CREDITOS","VOLTAR"};
             DrawText("RECARGA LIVRE", CX-120,75,30,GOLD);
